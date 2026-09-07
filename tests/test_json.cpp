@@ -1,4 +1,6 @@
 #include <cassert>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 
 #include "exhibitflow/json.hpp"
@@ -39,7 +41,10 @@ void test_invalid_bbox_fails() {
     } catch (const exhibitflow::ContractError&) {
         failed = true;
     }
-    assert(failed);
+    if (!failed) {
+        std::cerr << "expected invalid bbox to fail\n";
+        std::exit(1);
+    }
 }
 
 void test_config() {

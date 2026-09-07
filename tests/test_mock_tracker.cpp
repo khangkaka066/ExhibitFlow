@@ -1,4 +1,6 @@
 #include <cassert>
+#include <cstdlib>
+#include <iostream>
 
 #include "exhibitflow/tracker.hpp"
 
@@ -44,7 +46,10 @@ void test_unknown_tracker_fails() {
     } catch (const std::invalid_argument&) {
         failed = true;
     }
-    assert(failed);
+    if (!failed) {
+        std::cerr << "expected unknown tracker to fail\n";
+        std::exit(1);
+    }
 }
 
 }  // namespace
