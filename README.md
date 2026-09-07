@@ -34,21 +34,24 @@ whole input has been parsed and processed successfully.
 
 ## Real Video Pipeline
 
-The project can also wrap the real ByteTrack-DMA-LTC model repo and convert its
-MOT-style output into ExhibitFlow JSONL:
+The project can also run the real ByteTrack-DMA-LTC model repo on CAVIAR video.
+The default real config enables the MOT17 detector checkpoint, LTC motion
+checkpoint, FastReID appearance checkpoint, and DMA GBM fusion weights, then
+converts the MOT-style tracker output into ExhibitFlow JSONL:
 
 ```bash
-python3 tools/run_real_tracker.py \
-  --video data/caviar/videos/Browse_WhileWaiting1.mpg \
+.venv/bin/python tools/run_real_tracker.py \
+  --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
   --config configs/bytetrack_dma_caviar.json \
-  --output outputs/real_tracker/Browse_WhileWaiting1.tracks.jsonl \
+  --output outputs/real_tracker/Browse_WhileWaiting1_f620_80f.dma_ltc.tracks.jsonl \
   --overwrite
 ```
 
-Use `--show` to display the annotated video while tracking runs.
+Use `--show` to display the annotated video while tracking runs. The annotated
+MP4 and intermediate MOT rows are saved under `outputs/real_tracker/intermediate/`.
 
-See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for model
-setup, expected local folders, and conversion details.
+See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for local
+folder layout, required weights, environment checks, and conversion details.
 
 ## Test
 
@@ -56,6 +59,6 @@ setup, expected local folders, and conversion details.
 ctest --test-dir build --output-on-failure
 ```
 
-The current backend is `mock`. It creates deterministic sample track IDs for
-each detection and is meant to validate integration, file handling, and the
-data contract before the real MOT backend is added.
+The C++ CLI backend is `mock`. It creates deterministic sample track IDs for
+each detection and validates integration, file handling, and the data contract.
+The Python real-video wrapper is the bridge to the ByteTrack-DMA-LTC model repo.

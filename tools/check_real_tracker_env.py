@@ -26,6 +26,8 @@ REQUIRED_IMPORTS = [
     "yaml",
     "yacs",
 ]
+DMA_IMPORTS = ["lightgbm"]
+FAST_REID_IMPORTS = ["fvcore", "iopath", "tabulate", "faiss", "tensorboard"]
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -65,6 +67,28 @@ def main() -> None:
         ("checkpoint", checkpoint.exists(), str(checkpoint)),
     ]
 
+    ltc = config.get("ltc", {})
+    if ltc.get("motion_ckpt"):
+        ltc_ckpt = model_repo / ltc["motion_ckpt"]
+        checks.append(("ltc_motion_ckpt", ltc_ckpt.exists(), str(ltc_ckpt)))
+
+    reid = config.get("reid", {})
+    if reid.get("enabled", False):
+        if reid.get("fast_reid_config"):
+            reid_config = model_repo / reid["fast_reid_config"]
+            checks.append(("fast_reid_config", reid_config.exists(), str(reid_config)))
+        if reid.get("fast_reid_weights"):
+            reid_weights = model_repo / reid["fast_reid_weights"]
+            checks.append(("fast_reid_weights", reid_weights.exists(), str(reid_weights)))
+
+    dma = config.get("dma", {})
+    if dma.get("ml_weights"):
+        dma_weights = model_repo / dma["ml_weights"]
+        checks.append(("dma_ml_weights", dma_weights.exists(), str(dma_weights)))
+    if dma.get("weights"):
+        dma_weights = model_repo / dma["weights"]
+        checks.append(("dma_weights", dma_weights.exists(), str(dma_weights)))
+
     missing = []
     for name, ok, detail in checks:
         status = "ok" if ok else "missing"
@@ -72,7 +96,13 @@ def main() -> None:
         if not ok:
             missing.append(name)
 
-    for module_name in REQUIRED_IMPORTS:
+    imports = list(REQUIRED_IMPORTS)
+    if config.get("dma", {}).get("ml") == "gbm":
+        imports.extend(DMA_IMPORTS)
+    if config.get("reid", {}).get("enabled", False) and config.get("reid", {}).get("backend") == "fast":
+        imports.extend(FAST_REID_IMPORTS)
+
+    for module_name in imports:
         ok = has_import(module_name)
         status = "ok" if ok else "missing"
         print(f"{status:8} import {module_name}")
@@ -82,7 +112,7 @@ def main() -> None:
     if missing:
         print()
         print("Real tracker is not ready yet.")
-        print("Install the missing Python packages and download the checkpoint.")
+        print("Install the missing Python packages and download the configured weights.")
         raise SystemExit(1)
 
     print()

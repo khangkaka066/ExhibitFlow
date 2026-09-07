@@ -61,7 +61,8 @@ def load_config(path: Path) -> dict:
         config = json.load(handle)
     if config.get("schema_version") != "0.1":
         raise SystemExit(f"unsupported config schema_version in {path}")
-    if config.get("backend") != "bytetrack_video_demo":
+    supported_backends = {"bytetrack_video_demo", "bytetrack_video_dma_ltc"}
+    if config.get("backend") not in supported_backends:
         raise SystemExit(f"unsupported backend in {path}: {config.get('backend')}")
     return config
 
@@ -69,6 +70,7 @@ def load_config(path: Path) -> dict:
 def resolve_child_path(root: Path, value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else root / path
+
 
 
 def snapshot_result_files(model_repo: Path) -> set[Path]:
@@ -86,7 +88,6 @@ def newest_result_file(model_repo: Path, before: set[Path]) -> Path:
     if not all_results:
         raise SystemExit("ByteTrack finished but no result .txt file was found.")
     return all_results[0]
-
 
 def build_demo_args(args: argparse.Namespace, config: dict, model_repo: Path, checkpoint: Path) -> list[str]:
     exp_file = args.exp_file or config["exp_file"]
@@ -148,6 +149,106 @@ def build_demo_command(args: argparse.Namespace, config: dict, model_repo: Path,
         *demo_args,
     ]
 
+
+
+def build_dma_ltc_command(
+    args: argparse.Namespace, config: dict, model_repo: Path, checkpoint: Path
+) -> tuple[list[str], Path]:
+    exp_file = args.exp_file or config["exp_file"]
+    exp_path = resolve_child_path(model_repo, exp_file)
+    device = args.device or config.get("device", "cpu")
+    sequence_id = args.sequence_id or args.video.stem
+    run_dir = PROJECT_ROOT / "outputs" / "real_tracker" / "intermediate"
+    result_txt = run_dir / f"{sequence_id}.mot.txt"
+    annotated_video = run_dir / f"{sequence_id}.annotated.mp4"
+
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "tools" / "run_bytetrack_dma_ltc_video.py"),
+        "--model-repo",
+        str(model_repo),
+        "--exp-file",
+        str(exp_path),
+        "--checkpoint",
+        str(checkpoint),
+        "--video",
+        str(args.video.resolve()),
+        "--result-txt",
+        str(result_txt),
+        "--annotated-video",
+        str(annotated_video),
+        "--device",
+        device,
+        "--window-name",
+        args.window_name or f"ExhibitFlow: {args.video.stem}",
+        "--show-scale",
+        str(args.show_scale if args.show_scale is not None else config.get("show_scale", 1.0)),
+    ]
+
+    numeric_flags = {
+        "--fps": config.get("fps"),
+        "--tsize": config.get("tsize"),
+        "--conf": config.get("conf"),
+        "--nms": config.get("nms"),
+        "--track-thresh": config.get("track_thresh"),
+        "--track-buffer": config.get("track_buffer"),
+        "--match-thresh": config.get("match_thresh"),
+        "--min-box-area": config.get("min_box_area"),
+        "--aspect-ratio-thresh": config.get("aspect_ratio_thresh"),
+    }
+    for flag, value in numeric_flags.items():
+        if value is not None:
+            command.extend([flag, str(value)])
+
+    ltc = config.get("ltc", {})
+    ltc_motion_ckpt = config.get("ltc_motion_ckpt") or ltc.get("motion_ckpt")
+    if ltc_motion_ckpt:
+        command.extend(["--ltc-motion-ckpt", str(resolve_child_path(model_repo, ltc_motion_ckpt))])
+    for flag, key in {
+        "--ltc-device": "device",
+        "--ltc-history-len": "history_len",
+        "--ltc-min-history": "min_history",
+        "--ltc-covariance-scale": "covariance_scale",
+        "--ltc-max-abs-residual": "max_abs_residual",
+    }.items():
+        if key in ltc:
+            command.extend([flag, str(ltc[key])])
+
+    reid = config.get("reid", {})
+    if reid.get("enabled", False):
+        command.append("--with-reid")
+        command.extend(["--reid-backend", reid.get("backend", "fast")])
+        command.extend(["--reid-device", reid.get("device", "cpu")])
+        for flag, key in {
+            "--reid-weight": "weight",
+            "--reid-thresh": "thresh",
+            "--reid-alpha": "alpha",
+            "--fast-reid-batch-size": "batch_size",
+        }.items():
+            if key in reid:
+                command.extend([flag, str(reid[key])])
+        if reid.get("model_path"):
+            command.extend(["--reid-model-path", str(resolve_child_path(model_repo, reid["model_path"]))])
+        if reid.get("fast_reid_config"):
+            command.extend(["--fast-reid-config", str(resolve_child_path(model_repo, reid["fast_reid_config"]))])
+        if reid.get("fast_reid_weights"):
+            command.extend(["--fast-reid-weights", str(resolve_child_path(model_repo, reid["fast_reid_weights"]))])
+
+    dma = config.get("dma", {})
+    if dma.get("ml"):
+        command.extend(["--ml", dma["ml"]])
+        command.extend(["--ml-weights", str(resolve_child_path(model_repo, dma["ml_weights"]))])
+    elif dma.get("weights"):
+        command.extend(["--dma-weights", str(resolve_child_path(model_repo, dma["weights"]))])
+    if dma.get("device"):
+        command.extend(["--dma-device", dma["device"]])
+
+    if args.show:
+        command.append("--show")
+    if config.get("save_result", True):
+        command.append("--save-video")
+
+    return command, result_txt
 
 def build_convert_command(args: argparse.Namespace, config: dict, result_txt: Path) -> list[str]:
     sequence_id = args.sequence_id or args.video.stem
@@ -216,7 +317,13 @@ def main() -> None:
             "python tools/download_bytetrack_weights.py --name mot17_x"
         )
 
-    demo_command = build_demo_command(args, config, model_repo, checkpoint)
+    backend = config.get("backend")
+    if backend == "bytetrack_video_dma_ltc":
+        tracker_command, result_txt = build_dma_ltc_command(args, config, model_repo, checkpoint)
+    else:
+        tracker_command = build_demo_command(args, config, model_repo, checkpoint)
+        result_txt = None
+
     if args.dry_run:
         if checkpoint_missing:
             print(
@@ -225,15 +332,19 @@ def main() -> None:
                 "python tools/download_bytetrack_weights.py --name mot17_x",
                 file=sys.stderr,
             )
-        print(" ".join(shlex.quote(part) for part in demo_command))
+        print(" ".join(shlex.quote(part) for part in tracker_command))
         return
 
-    before = snapshot_result_files(model_repo)
-    started_at = time.time()
-    subprocess.run(demo_command, cwd=model_repo, check=True)
-    result_txt = newest_result_file(model_repo, before)
-    if result_txt.stat().st_mtime + 1 < started_at:
-        raise SystemExit(f"latest ByteTrack result looks stale: {result_txt}")
+    if backend == "bytetrack_video_dma_ltc":
+        subprocess.run(tracker_command, cwd=PROJECT_ROOT, check=True)
+        assert result_txt is not None
+    else:
+        before = snapshot_result_files(model_repo)
+        started_at = time.time()
+        subprocess.run(tracker_command, cwd=model_repo, check=True)
+        result_txt = newest_result_file(model_repo, before)
+        if result_txt.stat().st_mtime + 1 < started_at:
+            raise SystemExit(f"latest ByteTrack result looks stale: {result_txt}")
 
     convert_command = build_convert_command(args, config, result_txt)
     subprocess.run(convert_command, cwd=PROJECT_ROOT, check=True)

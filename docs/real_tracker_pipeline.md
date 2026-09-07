@@ -1,20 +1,30 @@
 # Real Video Tracker Pipeline
 
 ExhibitFlow keeps the C++ contract-oriented CLI and adds a Python runner for
-the real ByteTrack model repo. The runner lets the project process CAVIAR
-videos without changing the downstream `tracks.jsonl` schema.
+real video tracking with the ByteTrack-DMA-LTC model repo. The runner processes
+CAVIAR videos and exports the same downstream `tracks.jsonl` schema used by the
+mock C++ CLI.
 
 ```text
-CAVIAR .mpg video
-  -> ByteTrack model repo tools/demo_track.py
+CAVIAR video
+  -> YOLOX detector checkpoint
+  -> ByteTrack tracker with LTC motion prediction
+  -> FastReID appearance embeddings
+  -> DMA GBM motion/appearance fusion
   -> MOT-style result txt
   -> tools/convert_bytetrack_results.py
   -> ExhibitFlow tracks JSONL
 ```
 
-The current runner uses the model repo's `demo_track.py` path. It runs the real
-detector and ByteTrack tracker. DMA/LTC-specific checkpoints can be wired in as
-the next backend once those weights or demo entry points are available.
+The default config `configs/bytetrack_dma_caviar.json` uses the MOT17 weights
+from the Drive folder:
+
+```text
+pretrained/bytetrack_x_mot17.pth.tar   # detector + ByteTrack base checkpoint
+pretrained/ltc_motion_mot17.pth        # LTC motion predictor
+pretrained/mot17_sbs_S50.pth           # FastReID appearance model
+pretrained/dma_gbm_mot17.gbm           # DMA LightGBM fusion weights
+```
 
 ## Local Layout
 
@@ -34,56 +44,58 @@ data/caviar/annotations
 Both folders are ignored by Git because they are local datasets and external
 model code.
 
-## Install Model Dependencies
-
-From the model repo:
-
-```bash
-cd external/ByteTrack-DMA-LTC-Motion-Tracker
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python setup.py develop
-python tools/download_bytetrack_weights.py --name mot17_x
-```
-
-On Apple Silicon, run CPU mode first. GPU/CUDA-specific extensions may require
-a Linux CUDA machine.
-
-Check the environment from the ExhibitFlow repo:
-
-```bash
-python3 tools/check_real_tracker_env.py
-```
-
-## Run A CAVIAR Video
+## Check The Environment
 
 From the ExhibitFlow repo:
 
 ```bash
+.venv/bin/python tools/check_real_tracker_env.py \
+  --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4
+```
+
+The checker verifies the model repo, video, ByteTrack checkpoint, LTC weight,
+FastReID config/weight, DMA GBM weight, and the Python packages needed by the
+current DMA/LTC backend.
+
+## Make A Short CAVIAR Clip
+
+Full CAVIAR videos are slow on CPU. For quick local checks, create a short clip:
+
+```bash
 .venv/bin/python tools/make_video_clip.py \
   --input data/caviar/videos/Browse_WhileWaiting1.mpg \
-  --output data/caviar/videos/Browse_WhileWaiting1_80f.mp4 \
+  --output data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
+  --start-frame 620 \
   --frames 80 \
   --overwrite
 ```
 
-```bash
-.venv/bin/python tools/run_real_tracker.py \
-  --video data/caviar/videos/Browse_WhileWaiting1_80f.mp4 \
-  --config configs/bytetrack_dma_caviar.json \
-  --output outputs/real_tracker/Browse_WhileWaiting1_80f.tracks.jsonl \
-  --download-weights \
-  --overwrite
-```
-
-Add `--show` to see the annotated tracking video while frames are processed:
+## Run DMA/LTC Tracking
 
 ```bash
 .venv/bin/python tools/run_real_tracker.py \
   --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
   --config configs/bytetrack_dma_caviar.json \
-  --output outputs/real_tracker/Browse_WhileWaiting1_f620_80f.tracks.jsonl \
+  --output outputs/real_tracker/Browse_WhileWaiting1_f620_80f.dma_ltc.tracks.jsonl \
+  --overwrite
+```
+
+The runner also saves intermediate artifacts under `outputs/real_tracker/intermediate/`:
+
+```text
+<sequence>.mot.txt          # MOT-style tracker rows
+<sequence>.annotated.mp4    # rendered video with track boxes and IDs
+```
+
+## Run With Realtime Display
+
+Add `--show` to display the annotated video while tracking runs:
+
+```bash
+.venv/bin/python tools/run_real_tracker.py \
+  --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
+  --config configs/bytetrack_dma_caviar.json \
+  --output outputs/real_tracker/Browse_WhileWaiting1_f620_80f.dma_ltc.tracks.jsonl \
   --show \
   --overwrite
 ```
@@ -91,15 +103,12 @@ Add `--show` to see the annotated tracking video while frames are processed:
 Press `q` or `Esc` in the OpenCV window to stop early. The CAVIAR videos are
 384x288, so the default config shows them at 2x scale.
 
-The output JSONL uses the same frame context, `track_id`, `bbox`,
-`point_image`, and `score` fields documented in `docs/data_contract_v0.md`.
+## Convert An Existing MOT Result
 
-## Convert An Existing ByteTrack Result
-
-If `demo_track.py` has already produced a MOT-style result txt:
+If you already have a MOT-style result txt:
 
 ```bash
-python3 tools/convert_bytetrack_results.py \
+.venv/bin/python tools/convert_bytetrack_results.py \
   --mot-txt path/to/result.txt \
   --video data/caviar/videos/Browse_WhileWaiting1.mpg \
   --output outputs/real_tracker/Browse_WhileWaiting1.tracks.jsonl \
