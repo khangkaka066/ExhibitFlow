@@ -77,6 +77,20 @@ From the ExhibitFlow repo:
   --overwrite
 ```
 
+Add `--show` to see the annotated tracking video while frames are processed:
+
+```bash
+.venv/bin/python tools/run_real_tracker.py \
+  --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
+  --config configs/bytetrack_dma_caviar.json \
+  --output outputs/real_tracker/Browse_WhileWaiting1_f620_80f.tracks.jsonl \
+  --show \
+  --overwrite
+```
+
+Press `q` or `Esc` in the OpenCV window to stop early. The CAVIAR videos are
+384x288, so the default config shows them at 2x scale.
+
 The output JSONL uses the same frame context, `track_id`, `bbox`,
 `point_image`, and `score` fields documented in `docs/data_contract_v0.md`.
 

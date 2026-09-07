@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run real ByteTrack-DMA-LTC tracking on a video and convert results."
+        description="Run the real ByteTrack model repo on a video and convert results."
     )
     parser.add_argument("--video", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -30,6 +30,17 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exp-file")
     parser.add_argument("--checkpoint")
     parser.add_argument("--device", choices=("cpu", "gpu"), help="Model inference device.")
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show the annotated tracking video while the model is running.",
+    )
+    parser.add_argument(
+        "--show-scale",
+        type=float,
+        help="Display scale for the live tracking window.",
+    )
+    parser.add_argument("--window-name", help="Live display window title.")
     parser.add_argument(
         "--download-weights",
         action="store_true",
@@ -77,14 +88,12 @@ def newest_result_file(model_repo: Path, before: set[Path]) -> Path:
     return all_results[0]
 
 
-def build_demo_command(args: argparse.Namespace, config: dict, model_repo: Path, checkpoint: Path) -> list[str]:
+def build_demo_args(args: argparse.Namespace, config: dict, model_repo: Path, checkpoint: Path) -> list[str]:
     exp_file = args.exp_file or config["exp_file"]
     exp_path = resolve_child_path(model_repo, exp_file)
     device = args.device or config.get("device", "cpu")
 
-    command = [
-        sys.executable,
-        "tools/demo_track.py",
+    demo_args = [
         "video",
         "-f",
         str(exp_path),
@@ -108,15 +117,36 @@ def build_demo_command(args: argparse.Namespace, config: dict, model_repo: Path,
     }
     for flag, value in numeric_flags.items():
         if value is not None:
-            command.extend([flag, str(value)])
+            demo_args.extend([flag, str(value)])
 
-    if config.get("save_result", True):
-        command.append("--save_result")
+    if config.get("save_result", True) or args.show:
+        demo_args.append("--save_result")
 
     for extra in config.get("extra_args", []):
-        command.append(str(extra))
+        demo_args.append(str(extra))
 
-    return command
+    return demo_args
+
+
+def build_demo_command(args: argparse.Namespace, config: dict, model_repo: Path, checkpoint: Path) -> list[str]:
+    demo_args = build_demo_args(args, config, model_repo, checkpoint)
+    if not args.show:
+        return [sys.executable, "tools/demo_track.py", *demo_args]
+
+    show_scale = args.show_scale if args.show_scale is not None else config.get("show_scale", 1.0)
+    window_name = args.window_name or f"ExhibitFlow: {args.video.stem}"
+    return [
+        sys.executable,
+        str(PROJECT_ROOT / "tools" / "run_bytetrack_demo_live.py"),
+        "--model-repo",
+        str(model_repo),
+        "--window-name",
+        window_name,
+        "--display-scale",
+        str(show_scale),
+        "--",
+        *demo_args,
+    ]
 
 
 def build_convert_command(args: argparse.Namespace, config: dict, result_txt: Path) -> list[str]:

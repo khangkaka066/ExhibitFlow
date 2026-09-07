@@ -45,6 +45,8 @@ python3 tools/run_real_tracker.py \
   --overwrite
 ```
 
+Use `--show` to display the annotated video while tracking runs.
+
 See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for model
 setup, expected local folders, and conversion details.
 
