@@ -1,0 +1,2 @@
+{"schema_version":"0.1","sequence_id":"demo_01","camera_id":"cam_01","frame_id":0,"timestamp_ms":0,"image_size":{"width":1920,"height":1080},"detections":[{"bbox":[100,200,60,160],"score":0.95}]}
+{"schema_version":"0.1","sequence_id":"demo_01","camera_id":"cam_01","frame_id":1,"timestamp_ms":40,"image_size":{"width":1920,"height":1080},"detections":[]}
