@@ -50,7 +50,7 @@ def load_config(path: Path) -> dict:
         config = json.load(handle)
     if config.get("schema_version") != "0.1":
         raise SystemExit(f"unsupported config schema_version in {path}")
-    if config.get("backend") != "bytetrack_dma_ltc":
+    if config.get("backend") != "bytetrack_video_demo":
         raise SystemExit(f"unsupported backend in {path}: {config.get('backend')}")
     return config
 

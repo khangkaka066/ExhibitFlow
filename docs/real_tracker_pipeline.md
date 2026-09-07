@@ -1,16 +1,20 @@
 # Real Video Tracker Pipeline
 
 ExhibitFlow keeps the C++ contract-oriented CLI and adds a Python runner for
-the real ByteTrack-DMA-LTC model. The runner lets the project process CAVIAR
+the real ByteTrack model repo. The runner lets the project process CAVIAR
 videos without changing the downstream `tracks.jsonl` schema.
 
 ```text
 CAVIAR .mpg video
-  -> ByteTrack-DMA-LTC tools/demo_track.py
+  -> ByteTrack model repo tools/demo_track.py
   -> MOT-style result txt
   -> tools/convert_bytetrack_results.py
   -> ExhibitFlow tracks JSONL
 ```
+
+The current runner uses the model repo's `demo_track.py` path. It runs the real
+detector and ByteTrack tracker. DMA/LTC-specific checkpoints can be wired in as
+the next backend once those weights or demo entry points are available.
 
 ## Local Layout
 

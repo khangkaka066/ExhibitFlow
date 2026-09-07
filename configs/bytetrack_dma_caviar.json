@@ -1,6 +1,6 @@
 {
   "schema_version": "0.1",
-  "backend": "bytetrack_dma_ltc",
+  "backend": "bytetrack_video_demo",
   "model_repo": "external/ByteTrack-DMA-LTC-Motion-Tracker",
   "exp_file": "exps/example/mot/yolox_x_mix_det.py",
   "checkpoint": "pretrained/bytetrack_x_mot17.pth.tar",
