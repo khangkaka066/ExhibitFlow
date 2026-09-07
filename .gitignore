@@ -1,6 +1,11 @@
 build/
 cmake-build-*/
 data/
+external/
+outputs/
+.venv/
+__pycache__/
+*.pyc
 .DS_Store
 *.tmp
 *.log

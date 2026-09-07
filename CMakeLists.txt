@@ -12,6 +12,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter)
+endif()
+
 add_library(exhibitflow_core
     src/core/json.cpp
     src/core/track_writer.cpp
@@ -100,4 +104,48 @@ if(BUILD_TESTING)
     set_tests_properties(exhibitflow_cli_expected_output PROPERTIES
         FIXTURES_REQUIRED tracker_output
     )
+
+    if(Python3_FOUND)
+        add_test(
+            NAME exhibitflow_bytetrack_converter_cleanup
+            COMMAND ${CMAKE_COMMAND} -E rm -f
+                ${CMAKE_BINARY_DIR}/converted_tracks.jsonl
+                ${CMAKE_BINARY_DIR}/converted_tracks.jsonl.tmp
+        )
+
+        set_tests_properties(exhibitflow_bytetrack_converter_cleanup PROPERTIES
+            FIXTURES_SETUP bytetrack_conversion_clean
+        )
+
+        add_test(
+            NAME exhibitflow_bytetrack_result_converter
+            COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tools/convert_bytetrack_results.py
+                --mot-txt ${PROJECT_SOURCE_DIR}/examples/bytetrack_mot_results.txt
+                --output ${CMAKE_BINARY_DIR}/converted_tracks.jsonl
+                --sequence-id fixture_01
+                --camera-id cam_01
+                --fps 25
+                --width 384
+                --height 288
+                --frame-count 3
+                --input-frame-base 0
+        )
+
+        set_tests_properties(exhibitflow_bytetrack_result_converter PROPERTIES
+            FIXTURES_REQUIRED bytetrack_conversion_clean
+            FIXTURES_SETUP bytetrack_conversion
+        )
+
+        add_test(
+            NAME exhibitflow_bytetrack_converter_expected_output
+            COMMAND ${CMAKE_COMMAND} -E compare_files
+                ${CMAKE_BINARY_DIR}/converted_tracks.jsonl
+                ${PROJECT_SOURCE_DIR}/examples/expected_converted_tracks.jsonl
+        )
+
+        set_tests_properties(exhibitflow_bytetrack_converter_expected_output PROPERTIES
+            FIXTURES_REQUIRED bytetrack_conversion
+        )
+    endif()
 endif()

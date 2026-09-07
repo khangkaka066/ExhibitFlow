@@ -32,6 +32,22 @@ cmake --build build --parallel
 The CLI writes logs and errors to stderr. Output JSONL is written only after the
 whole input has been parsed and processed successfully.
 
+## Real Video Pipeline
+
+The project can also wrap the real ByteTrack-DMA-LTC model repo and convert its
+MOT-style output into ExhibitFlow JSONL:
+
+```bash
+python3 tools/run_real_tracker.py \
+  --video data/caviar/videos/Browse_WhileWaiting1.mpg \
+  --config configs/bytetrack_dma_caviar.json \
+  --output outputs/real_tracker/Browse_WhileWaiting1.tracks.jsonl \
+  --overwrite
+```
+
+See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for model
+setup, expected local folders, and conversion details.
+
 ## Test
 
 ```bash
