@@ -1,0 +1,54 @@
+{
+  "schema": "schema_v1",
+  "note": "DRAFT for Checkpoint C0. Zones are a first proposal - adjust polygons to the real hall. reference_points.image_px are NULL: run scripts/pick_reference_points.py to fill them by clicking the reference frame, then the homography becomes usable.",
+
+  "floor_plan": {
+    "image": "floor_plan.png",
+    "width_m": 24.0,
+    "height_m": 13.0,
+    "px_per_m": 40
+  },
+
+  "source": {
+    "dataset": "MuseumVisitors",
+    "camera": 1,
+    "frame_ref": "frames/1/24-03-14/16h21m46s_3820.jpg",
+    "frame_size_px": [1280, 800],
+    "fps": 5.0
+  },
+
+  "reference_points": [
+    { "id": "rp1", "landmark": "far wall meets floor, left side, near the doorway",
+      "image_px": [305, 118], "image_px_status": "ESTIMATE - refine with scripts/pick_reference_points.py", "floor_m": [3.0, 0.5] },
+    { "id": "rp2", "landmark": "far wall meets floor, centre (below the row of display tables)",
+      "image_px": [620, 92],  "image_px_status": "ESTIMATE", "floor_m": [12.0, 0.5] },
+    { "id": "rp3", "landmark": "far wall meets floor, right side, below the arched windows",
+      "image_px": [1090, 78], "image_px_status": "ESTIMATE", "floor_m": [21.0, 0.5] },
+    { "id": "rp4", "landmark": "window-wall meets floor, right/near side (before the wooden bench)",
+      "image_px": [1215, 330], "image_px_status": "ESTIMATE", "floor_m": [22.5, 11.5] },
+    { "id": "rp5", "landmark": "left wall meets floor, near side (by the blue folding chairs)",
+      "image_px": [95, 455],  "image_px_status": "ESTIMATE", "floor_m": [1.5, 11.5] },
+    { "id": "rp6", "landmark": "base of the free-standing white pedestal, centre-left of the hall",
+      "image_px": [378, 250], "image_px_status": "ESTIMATE", "floor_m": [7.0, 4.5] }
+  ],
+
+  "zones": [
+    { "id": "Z1", "name": "Cửa ra vào / lối vào",
+      "polygon_m": [[0.0, 1.0], [3.5, 1.0], [3.5, 6.0], [0.0, 6.0]] },
+
+    { "id": "Z2", "name": "Hiện vật tường xa (dãy tượng + tranh)",
+      "polygon_m": [[3.5, 0.0], [22.0, 0.0], [22.0, 2.6], [3.5, 2.6]] },
+
+    { "id": "Z3", "name": "Tượng tường cửa sổ",
+      "polygon_m": [[9.0, 10.4], [23.0, 10.4], [23.0, 13.0], [9.0, 13.0]] },
+
+    { "id": "Z4", "name": "Tủ trưng bày bên trái",
+      "polygon_m": [[0.0, 6.0], [2.6, 6.0], [2.6, 12.5], [0.0, 12.5]] },
+
+    { "id": "Z5", "name": "Khu đoàn khách đứng",
+      "polygon_m": [[12.5, 5.5], [19.5, 5.5], [19.5, 10.0], [12.5, 10.0]] },
+
+    { "id": "Z6", "name": "Sảnh giữa (sàn trống)",
+      "polygon_m": [[3.5, 2.6], [22.0, 2.6], [22.0, 10.4], [3.5, 10.4]] }
+  ]
+}
