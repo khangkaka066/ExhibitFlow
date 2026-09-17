@@ -34,7 +34,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", required=True, type=Path)
     parser.add_argument("--result-txt", required=True, type=Path)
     parser.add_argument("--annotated-video", type=Path)
-    parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--tsize", type=int)
     parser.add_argument("--conf", type=float)
@@ -61,6 +61,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reid-weight", type=float, default=0.35)
     parser.add_argument("--reid-thresh", type=float, default=0.7)
     parser.add_argument("--reid-alpha", type=float, default=0.9)
+    parser.add_argument("--reid-model", default="osnet_x1_0", help="torchreid model name (deep backend)")
     parser.add_argument("--reid-model-path", default="")
     parser.add_argument("--fast-reid-config", type=Path)
     parser.add_argument("--fast-reid-weights", type=Path)
@@ -101,6 +102,7 @@ def build_tracker_args(args: argparse.Namespace) -> SimpleNamespace:
         reid_weight=args.reid_weight,
         reid_thresh=args.reid_thresh,
         reid_alpha=args.reid_alpha,
+        reid_model=args.reid_model,
         reid_model_path=args.reid_model_path,
         fast_reid_config=str(args.fast_reid_config.resolve()) if args.fast_reid_config else "",
         fast_reid_weights=str(args.fast_reid_weights.resolve()) if args.fast_reid_weights else "",
@@ -407,7 +409,7 @@ def main() -> None:
     if args.tsize is not None:
         exp.test_size = (args.tsize, args.tsize)
 
-    device = torch.device("cuda" if args.device == "gpu" and torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
     model = exp.get_model().to(device)
     model.eval()
     checkpoint = torch.load(str(args.checkpoint.resolve()), map_location="cpu")
@@ -444,6 +446,7 @@ def main() -> None:
         ok, frame = cap.read()
         if not ok:
             break
+        timer.tic()
         outputs, img_info = predictor.inference(frame)
         online_tlwhs = []
         online_ids = []

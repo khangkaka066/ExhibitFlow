@@ -189,16 +189,20 @@ def build_frame_record(
     track_records = []
     for row in sorted(tracks, key=lambda item: item.track_id):
         x, y, width, height = row.bbox
-        if x + width > meta.width or y + height > meta.height:
-            raise SystemExit(
-                f"track {row.track_id} on frame {frame_id} is outside image bounds "
-                f"{meta.width}x{meta.height}"
-            )
+        x0 = max(x, 0.0)
+        y0 = max(y, 0.0)
+        x1 = min(x + width, float(meta.width))
+        y1 = min(y + height, float(meta.height))
+        width = x1 - x0
+        height = y1 - y0
+        if width <= 0 or height <= 0:
+            continue
+        x, y = x0, y0
 
         track_records.append(
             {
                 "track_id": row.track_id,
-                "bbox": [compact_number(value) for value in row.bbox],
+                "bbox": [compact_number(value) for value in (x, y, width, height)],
                 "point_image": [
                     compact_number(x + width / 2.0),
                     compact_number(y + height),

@@ -18,6 +18,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
+Install dependencies
+```bash
+uv venv --python 3.10
+
+uv pip install -r requirements.txt
+uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu118
+```
+
 ## Run
 
 ```bash

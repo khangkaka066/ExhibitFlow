@@ -224,6 +224,7 @@ def build_dma_ltc_command(
             "--reid-thresh": "thresh",
             "--reid-alpha": "alpha",
             "--fast-reid-batch-size": "batch_size",
+            "--reid-model": "model",
         }.items():
             if key in reid:
                 command.extend([flag, str(reid[key])])
