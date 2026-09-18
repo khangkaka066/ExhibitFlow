@@ -132,8 +132,8 @@ def read_mot_rows(path: Path) -> list[TrackRow]:
                 raise SystemExit(f"{path}:{line_number}: frame_id and track_id must be non-negative")
             if not all(math.isfinite(value) for value in (x, y, width, height, score)):
                 raise SystemExit(f"{path}:{line_number}: bbox and score must be finite")
-            if x < 0 or y < 0 or width <= 0 or height <= 0:
-                raise SystemExit(f"{path}:{line_number}: bbox must have positive size inside image space")
+            if width <= 0 or height <= 0:
+                raise SystemExit(f"{path}:{line_number}: bbox must have positive size")
 
             rows.append(
                 TrackRow(
