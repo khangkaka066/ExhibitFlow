@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExhibitFlow · Visitor intelligence</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark">E<span>f</span></span>ExhibitFlow<span class="brand-dot">®</span></a>
+    <div class="workspace"><span class="workspace-icon">▧</span><div>Không gian triển lãm<small>Visitor intelligence</small></div></div>
+    <p class="nav-label">KHÔNG GIAN LÀM VIỆC</p>
+    <nav aria-label="Điều hướng dashboard">
+      <a href="#overview" class="active"><span>◫</span>Tổng quan</a>
+      <a href="#floor-map"><span>▧</span>Floor map & heatmap</a>
+      <a href="#zone-stats"><span>▥</span>Thống kê khu vực</a>
+      <a href="#transitions"><span>⇄</span>Chuyển tiếp zone</a>
+      <a href="#journeys"><span>⌁</span>Hành trình khách</a>
+    </nav>
+    <div class="sidebar-bottom"><span class="status-dot"></span> Dữ liệu minh họa<small>Wireframe v0.1 · Chưa kết nối tracker</small><a href="../docs/dashboard_wireframe.md">Tài liệu thiết kế ↗</a></div>
+  </aside>
+  <main id="overview">
+    <header class="topbar"><span>Workspace <span class="slash">/</span> Triển lãm mẫu <span class="slash">/</span> <strong>Tổng quan</strong></span><span class="prototype">PROTOTYPE</span></header>
+    <div class="page-content">
+      <div class="page-heading"><div><p class="eyebrow">HIỂU CHUYỂN ĐỘNG. HIỂU KHÔNG GIAN.</p><h1>Từng bước chân, một câu chuyện.</h1><p class="muted">Khám phá cách khách di chuyển và dừng lại trong không gian triển lãm.</p></div><button id="reset" class="button secondary">↺ Đặt lại bộ lọc</button></div>
+      <div class="demo-notice"><span>◈</span><p><strong>Bản thiết kế tương tác</strong> · Mặt bằng và hành trình được tạo để minh họa bố cục; không phải kết quả CAVIAR hay chất lượng mô hình.</p></div>
+      <section class="filters" aria-label="Bộ lọc dữ liệu">
+        <label>PHIÊN / CAMERA<select id="session"><option>Demo gallery · cam_01</option></select></label>
+        <label>KHOẢNG THỜI GIAN<select id="time-window"><option value="all">Toàn phiên · 00:00–02:00</option><option value="first">Nửa đầu · 00:00–01:00</option><option value="second">Nửa sau · 01:00–02:00</option></select></label>
+        <label>KHU VỰC<select id="zone-filter"><option value="all">Tất cả khu vực</option></select></label>
+        <div class="filter-note"><span class="status-dot"></span> Một camera · ID ẩn danh<br><small>Thời gian tính từ đầu video</small></div>
+      </section>
+      <section class="metrics" aria-label="Chỉ số tổng quan" id="metrics"></section>
+      <div class="primary-grid">
+        <section class="card map-card" id="floor-map">
+          <div class="card-header"><div><p class="eyebrow">01 / SPATIAL OVERVIEW</p><h2>Nhịp chuyển động trong không gian</h2></div><span class="pill">Mặt bằng minh họa</span></div>
+          <div class="map-toolbar"><div class="segmented" aria-label="Lớp hiển thị"><button data-layer="floor">Floor map</button><button data-layer="heat" class="selected" aria-pressed="true">Heatmap</button><button data-layer="journey">Journey</button></div><span class="map-hint">Chọn một zone để xem chi tiết</span></div>
+          <div class="map-stage"><svg id="map" viewBox="0 0 760 450" role="img" aria-label="Mặt bằng triển lãm, zone, heatmap và đường đi của khách"></svg><span class="north">↑<small>BẮC</small></span><span class="map-scale">0 ━━━━━ 5 m <small>tỷ lệ minh họa</small></span></div>
+          <div class="map-footer"><span id="layer-description">Mật độ theo thời gian quan sát</span><span class="heat-legend">Ít <i></i> Nhiều <small>chuẩn hóa trong bộ lọc</small></span></div>
+        </section>
+        <aside class="card detail-card"><div class="card-header"><div><p class="eyebrow">ZONE SPOTLIGHT</p><h2 id="spotlight-name">Toàn không gian</h2></div><span class="tiny-icon">↗</span></div><div id="spotlight"></div><div class="insight"><span>✧</span><div><strong>Gợi ý đọc bản demo</strong><p id="insight-text"></p></div></div><div class="pipeline-note"><span>TRACK → MAP → ANALYZE</span><p>Dữ liệu thật cần hiệu chỉnh homography và định nghĩa zone trước khi tạo thống kê.</p></div></aside>
+      </div>
+      <div class="analytics-grid">
+        <section class="card" id="zone-stats"><div class="card-header"><div><p class="eyebrow">02 / ZONE PERFORMANCE</p><h2>Điều gì giữ chân khách?</h2></div><span class="pill">Theo bộ lọc</span></div><div class="table-scroll"><table><caption class="sr-only">Lượt ghé và thời gian dừng theo khu vực</caption><thead><tr><th scope="col">Khu vực</th><th scope="col">ID ghé</th><th scope="col">Dừng TB / lượt</th><th scope="col">Mức quan tâm</th></tr></thead><tbody id="zone-rows"></tbody></table></div><p class="card-footnote">Một ID có thể ghé nhiều zone. Nhãn nóng / ít ghé chỉ là quy tắc demo.</p></section>
+        <section class="card" id="transitions"><div class="card-header"><div><p class="eyebrow">03 / ZONE TRANSITIONS</p><h2>Khách đi đâu tiếp theo?</h2></div><span class="pill">Có hướng</span></div><div class="transition-body"><div id="transition-bars"></div><p class="matrix-label">MA TRẬN · HÀNG = TỪ / CỘT = ĐẾN</p><div class="table-scroll" id="transition-matrix"></div></div><p class="card-footnote">Đếm lần chuyển zone liên tiếp; bộ lọc zone giữ các cạnh đi / đến zone đó.</p></section>
+      </div>
+      <section class="card journey-card" id="journeys"><div class="card-header"><div><p class="eyebrow">04 / VISITOR JOURNEYS</p><h2>Theo dấu một hành trình</h2></div><span class="pill">ID theo phiên & camera</span></div><div class="journey-body"><div class="journey-selector"><label for="visitor">CHỌN TRACK ẨN DANH</label><select id="visitor"></select><p id="journey-summary"></p><button class="button primary" id="show-journey">Xem đường đi trên map ↗</button></div><div class="journey-timeline"><div id="journey-stops"></div><div class="playback"><button id="play" class="play-button" aria-label="Phát hành trình">▶</button><label class="sr-only" for="scrubber">Vị trí phát lại trong phiên</label><input id="scrubber" type="range" min="0" max="120" value="0" step="1"><output id="playback-time" for="scrubber">00:00 / 02:00</output></div><p class="muted small">Phát lại dữ liệu minh họa · Không phải video trực tiếp. Đường đi dừng tại mốc đang chọn.</p></div></div></section>
+      <footer><span><strong>ExhibitFlow</strong> / Visitor journey analytics</span><span>Không nhận diện khuôn mặt · Không lưu danh tính cá nhân</span></footer>
+    </div>
+  </main>
+</body>
+</html>
