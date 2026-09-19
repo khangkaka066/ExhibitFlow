@@ -1,0 +1,44 @@
+{
+  "schema_version": "0.1",
+  "backend": "bytetrack_video_dma_ltc",
+  "model_repo": "external/ByteTrack-DMA-LTC-Motion-Tracker",
+  "exp_file": "exps/example/mot/yolox_x_mix_det.py",
+  "checkpoint": "pretrained/bytetrack_x_mot17.pth.tar",
+  "device": "cpu",
+  "fps": 25,
+  "tsize": 640,
+  "conf": 0.01,
+  "nms": 0.45,
+  "track_thresh": 0.1,
+  "track_buffer": 30,
+  "match_thresh": 0.8,
+  "min_box_area": 1,
+  "aspect_ratio_thresh": 1.6,
+  "save_result": true,
+  "show_scale": 2.0,
+  "ltc": {
+    "motion_ckpt": "pretrained/ltc_motion_mot17.pth",
+    "device": "cpu",
+    "history_len": 16,
+    "min_history": 8,
+    "covariance_scale": 1.0,
+    "max_abs_residual": 256.0
+  },
+  "reid": {
+    "enabled": true,
+    "backend": "fast",
+    "device": "cpu",
+    "fast_reid_config": "fast-reid/configs/MOT17/sbs_S50.yml",
+    "fast_reid_weights": "pretrained/mot17_sbs_S50.pth",
+    "batch_size": 16,
+    "weight": 0.35,
+    "thresh": 0.7,
+    "alpha": 0.9
+  },
+  "dma": {
+    "ml": "gbm",
+    "ml_weights": "pretrained/dma_gbm_mot17.gbm",
+    "device": "cpu"
+  },
+  "extra_args": []
+}

@@ -43,7 +43,7 @@ whole input has been parsed and processed successfully.
 ## Real Video Pipeline
 
 The project can also run the real ByteTrack-DMA-LTC model repo on CAVIAR video.
-The default real config enables the MOT17 detector checkpoint, LTC motion
+The default real config enables the YOLOX-S MOT17 detector checkpoint, LTC motion
 checkpoint, FastReID appearance checkpoint, and DMA GBM fusion weights, then
 converts the MOT-style tracker output into ExhibitFlow JSONL:
 
@@ -60,6 +60,23 @@ MP4 and intermediate MOT rows are saved under `outputs/real_tracker/intermediate
 
 See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for local
 folder layout, required weights, environment checks, and conversion details.
+
+## Dashboard wireframe
+
+Open [dashboard/index.html](dashboard/index.html) in a browser for the interactive
+ExhibitFlow layout: floor map, heatmap, zone statistics, transition matrix, and
+anonymous visitor journeys. It reads the checked-in `dashboard/data/mock_tracks.csv` file over HTTP, derives
+mock zone visits from image coordinates, and remains separate from real tracker/calibration output.
+
+```bash
+python3 -m http.server 8080 --bind 127.0.0.1  # then open http://127.0.0.1:8080/dashboard/
+```
+
+For Linux or a local HTTP preview, run `python3 -m http.server 8080 --bind 127.0.0.1`
+from the repo root, then visit `http://127.0.0.1:8080/dashboard/`.
+
+See the [wireframe design and acceptance checklist](docs/dashboard_wireframe.md)
+and [proposed analytics data contract](docs/dashboard_data_contract_proposal.md).
 
 ## Test
 
