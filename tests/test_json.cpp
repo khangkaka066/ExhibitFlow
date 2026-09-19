@@ -51,11 +51,25 @@ void test_config() {
     assert(exhibitflow::parse_tracker_name_from_config("{\"schema_version\":\"0.1\",\"tracker\":\"mock\"}") == "mock");
 }
 
+void test_detection_round_trip() {
+    const std::string line =
+        "{\"schema_version\":\"0.1\",\"sequence_id\":\"demo_01\",\"camera_id\":\"cam_01\","
+        "\"frame_id\":3,\"timestamp_ms\":120,\"image_size\":{\"width\":1920,\"height\":1080},"
+        "\"detections\":[{\"bbox\":[100,200,60,160],\"score\":0.95}]}";
+    const exhibitflow::DetectionFrame original = exhibitflow::parse_detection_frame(line, 1);
+    const exhibitflow::DetectionFrame round_trip =
+        exhibitflow::parse_detection_frame(exhibitflow::serialize_detection_frame(original), 1);
+    assert(round_trip.context.frame_id == 3);
+    assert(round_trip.detections.size() == 1);
+    assert(round_trip.detections[0].score == 0.95);
+}
+
 }  // namespace
 
 int main() {
     test_parse_detection_frame();
     test_invalid_bbox_fails();
     test_config();
+    test_detection_round_trip();
     return 0;
 }

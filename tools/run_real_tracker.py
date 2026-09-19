@@ -46,7 +46,11 @@ def make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Download the configured ByteTrack checkpoint if it is missing.",
     )
-    parser.add_argument("--weights-name", default="mot17_x")
+    parser.add_argument(
+        "--weights-name",
+        choices=("mot17_s", "mot17_m", "mot17_x", "ablation"),
+        help="Checkpoint to download when the configured checkpoint is missing.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -296,13 +300,29 @@ def main() -> None:
     checkpoint = resolve_child_path(model_repo, checkpoint_value)
     checkpoint_missing = not checkpoint.exists()
     if checkpoint_missing and args.download_weights and not args.dry_run:
+        weights_name = args.weights_name
+        if weights_name is None:
+            checkpoint_name = checkpoint.name
+            weights_name = next(
+                (
+                    candidate
+                    for candidate in ("mot17_s", "mot17_m", "mot17_x")
+                    if f"bytetrack_{candidate.removeprefix('mot17_')}_" in checkpoint_name
+                ),
+                None,
+            )
+        if weights_name is None:
+            raise SystemExit(
+                "Cannot infer the checkpoint downloader name from "
+                f"{checkpoint.name}; pass --weights-name explicitly."
+            )
         download_script = model_repo / "tools" / "download_bytetrack_weights.py"
         subprocess.run(
             [
                 sys.executable,
                 str(download_script),
                 "--name",
-                args.weights_name,
+                weights_name,
                 "--output-dir",
                 str(checkpoint.parent),
             ],
@@ -314,8 +334,8 @@ def main() -> None:
     if checkpoint_missing and not args.dry_run:
         raise SystemExit(
             f"checkpoint is missing: {checkpoint}\n"
-            "Run again with --download-weights, or from the model repo run: "
-            "python tools/download_bytetrack_weights.py --name mot17_x"
+            "The configured detector is YOLOX-S. Provide the matching "
+            "bytetrack_s_mot17.pth.tar checkpoint before running."
         )
 
     backend = config.get("backend")
@@ -329,8 +349,8 @@ def main() -> None:
         if checkpoint_missing:
             print(
                 f"warning: checkpoint is missing: {checkpoint}\n"
-                "run again with --download-weights, or from the model repo run: "
-                "python tools/download_bytetrack_weights.py --name mot17_x",
+                "The configured detector is YOLOX-S; provide the matching "
+                "bytetrack_s_mot17.pth.tar checkpoint before running.",
                 file=sys.stderr,
             )
         print(" ".join(shlex.quote(part) for part in tracker_command))

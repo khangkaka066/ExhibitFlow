@@ -74,12 +74,18 @@ def main() -> None:
 
     reid = config.get("reid", {})
     if reid.get("enabled", False):
-        if reid.get("fast_reid_config"):
+        if reid.get("backend") == "fast" and reid.get("fast_reid_config"):
             reid_config = model_repo / reid["fast_reid_config"]
             checks.append(("fast_reid_config", reid_config.exists(), str(reid_config)))
-        if reid.get("fast_reid_weights"):
+        if reid.get("backend") == "fast" and reid.get("fast_reid_weights"):
             reid_weights = model_repo / reid["fast_reid_weights"]
             checks.append(("fast_reid_weights", reid_weights.exists(), str(reid_weights)))
+        if reid.get("backend") == "deep" and reid.get("model_path"):
+            reid_weights = model_repo / reid["model_path"]
+            checks.append(("reid_model_path", reid_weights.exists(), str(reid_weights)))
+        if reid.get("backend") == "deep":
+            torchreid_root = model_repo / "deep-person-reid" / "torchreid"
+            checks.append(("torchreid_backend", (torchreid_root / "models").is_dir(), str(torchreid_root)))
 
     dma = config.get("dma", {})
     if dma.get("ml_weights"):

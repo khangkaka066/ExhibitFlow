@@ -17,6 +17,7 @@ struct CliOptions {
     std::string input_path;
     std::string config_path;
     std::string output_path;
+    std::string device = "auto";
     bool help = false;
     bool version = false;
 };
@@ -28,6 +29,7 @@ void print_help(std::ostream& out) {
         << "  --input PATH    Detection JSONL input file\n"
         << "  --config PATH   Tracker config JSON file\n"
         << "  --output PATH   Track JSONL output file\n"
+        << "  --device NAME   Execution device: auto, cpu, or cuda (default: auto)\n"
         << "  --help          Show this help text\n"
         << "  --version       Show CLI version\n";
 }
@@ -41,7 +43,7 @@ CliOptions parse_args(int argc, char** argv) {
             options.help = true;
         } else if (arg == "--version") {
             options.version = true;
-        } else if (arg == "--input" || arg == "--config" || arg == "--output") {
+        } else if (arg == "--input" || arg == "--config" || arg == "--output" || arg == "--device") {
             if (i + 1 >= argc) {
                 throw std::invalid_argument("missing value for " + arg);
             }
@@ -50,8 +52,10 @@ CliOptions parse_args(int argc, char** argv) {
                 options.input_path = value;
             } else if (arg == "--config") {
                 options.config_path = value;
-            } else {
+            } else if (arg == "--output") {
                 options.output_path = value;
+            } else {
+                options.device = value;
             }
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
@@ -61,6 +65,9 @@ CliOptions parse_args(int argc, char** argv) {
     if (!options.help && !options.version) {
         if (options.input_path.empty() || options.config_path.empty() || options.output_path.empty()) {
             throw std::invalid_argument("--input, --config, and --output are required");
+        }
+        if (options.device != "auto" && options.device != "cpu" && options.device != "cuda") {
+            throw std::invalid_argument("--device must be one of: auto, cpu, cuda");
         }
         if (options.output_path == options.input_path || options.output_path == options.config_path) {
             throw std::invalid_argument("--output must be different from --input and --config");
@@ -110,6 +117,8 @@ int run_tracker(const CliOptions& options) {
     if (fs::exists(output_path)) {
         throw std::ios_base::failure("output file already exists: " + options.output_path);
     }
+
+    std::cerr << "device=" << options.device << " (mock tracker; no accelerator is selected)\n";
 
     const std::string config_source = read_file(options.config_path);
     auto tracker = exhibitflow::create_tracker(exhibitflow::parse_tracker_name_from_config(config_source));

@@ -18,7 +18,8 @@ motmetrics
 ninja
 numpy
 onnx
-onnx-simplifier==0.3.5
+onnxsim>=0.7.3
+onnxscript>=0.7.2
 onnxruntime==1.23.2
 opencv-python
 Pillow

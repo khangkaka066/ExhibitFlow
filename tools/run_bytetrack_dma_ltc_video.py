@@ -389,6 +389,11 @@ def scaled_for_display(frame, scale: float):
 def main() -> None:
     args = make_parser().parse_args()
     args.model_repo = args.model_repo.resolve()
+    if not torch.cuda.is_available():
+        for attr in ("device", "ltc_device", "reid_device"):
+            if getattr(args, attr, None) == "cuda":
+                print(f"[Device] CUDA unavailable; falling back {attr}=cpu")
+                setattr(args, attr, "cpu")
     add_model_repo_to_path(args.model_repo)
 
     from yolox.exp import get_exp

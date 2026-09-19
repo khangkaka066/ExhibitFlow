@@ -57,6 +57,7 @@ private:
 
 JsonValue parse_json(const std::string& source);
 DetectionFrame parse_detection_frame(const std::string& line, std::size_t line_number);
+std::string serialize_detection_frame(const DetectionFrame& frame);
 std::string serialize_track_frame(const TrackFrame& frame);
 std::string parse_tracker_name_from_config(const std::string& source);
 

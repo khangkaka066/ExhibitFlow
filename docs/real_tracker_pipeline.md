@@ -16,15 +16,107 @@ CAVIAR video
   -> ExhibitFlow tracks JSONL
 ```
 
-The default config `configs/bytetrack_dma_caviar.json` uses the MOT17 weights
-from the Drive folder:
+The default config `configs/bytetrack_dma_caviar.json` uses the YOLOX-S MOT17
+detector weights. The required model files are:
 
 ```text
-pretrained/bytetrack_x_mot17.pth.tar   # detector + ByteTrack base checkpoint
+pretrained/bytetrack_s_mot17.pth.tar   # YOLOX-S detector + ByteTrack base checkpoint
 pretrained/ltc_motion_mot17.pth        # LTC motion predictor
 pretrained/mot17_sbs_S50.pth           # FastReID appearance model
 pretrained/dma_gbm_mot17.gbm           # DMA LightGBM fusion weights
 ```
+
+The detector is intentionally kept backend-neutral in the config. The same
+YOLOX-S weights can later be exported to ONNX for macOS/portable inference or
+TensorRT FP16 for NVIDIA GPUs, while the tracking, LTC, ReID, and DMA stages
+remain unchanged.
+
+For the current C++ deployment work, a validated portable detector artifact is
+available at:
+
+```text
+models/yolox_s_mot17_640.onnx
+```
+
+It uses input `1x3x640x640` and produces raw YOLOX output `1x8400x6`; decode,
+confidence filtering, and NMS remain in the C++ pipeline. On Windows with an
+NVIDIA GPU, build a machine-specific TensorRT FP16 engine from this ONNX file:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build_tensorrt_engine.ps1
+```
+
+The script requires `trtexec.exe` from NVIDIA TensorRT on `PATH` and creates
+`models/yolox_s_mot17_640_fp16.engine`. Build the engine on the target NVIDIA
+machine because TensorRT engines depend on the CUDA/TensorRT runtime and GPU
+architecture.
+
+Keep ONNX as the portable source artifact. TensorRT engines are tied to the
+TensorRT/CUDA/GPU environment, so build one on each target NVIDIA machine and
+do not replace the ONNX artifact with a single prebuilt engine.
+
+## C++ Detector CLI
+
+`exhibitflow_detector` is the first native stage of the production path:
+
+```text
+OpenCV BGR frame -> C++ YOLOX letterbox/normalization -> ONNX Runtime or TensorRT
+               -> C++ decode + confidence filter + NMS -> detections JSONL
+```
+
+It writes the existing `DetectionFrame` JSONL contract directly, one row for
+every decoded frame. It deliberately does **not** call the tracker yet; that
+makes detector accuracy and latency measurable before ByteTrack/LTC/ReID/DMA
+is migrated.
+
+The baseline CMake build remains usable without inference dependencies. The
+detector target is created only when CMake finds OpenCV and at least one native
+inference backend.
+
+For ONNX Runtime, install an ONNX Runtime C++ release together with OpenCV,
+then configure its root explicitly when it is not already discoverable:
+
+```powershell
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release `
+  -DEXHIBITFLOW_ONNXRUNTIME_ROOT=C:\sdk\onnxruntime
+cmake --build build --config Release --target exhibitflow_detector
+```
+
+For TensorRT on an NVIDIA machine, install CUDA, TensorRT, and OpenCV; build
+the engine on that machine first; then provide the TensorRT root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build_tensorrt_engine.ps1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release `
+  -DEXHIBITFLOW_TENSORRT_ROOT=C:\TensorRT
+cmake --build build --config Release --target exhibitflow_detector
+```
+
+`CUDA_PATH` must point to the CUDA Toolkit for the TensorRT build. The CMake
+diagnostics state which backend is enabled. Copy the matching dynamic libraries
+beside the executable or make their `bin` directories available on `PATH`.
+
+Run the detector with one backend at a time:
+
+```powershell
+build\bin\Release\exhibitflow_detector `
+  --backend onnxruntime `
+  --model models\yolox_s_mot17_640.onnx `
+  --video data\caviar\videos\Browse_WhileWaiting1_f620_80f.mp4 `
+  --output outputs\detector\bww1_onnx.jsonl `
+  --conf 0.01 --nms 0.45
+
+build\bin\Release\exhibitflow_detector `
+  --backend tensorrt `
+  --model models\yolox_s_mot17_640_fp16.engine `
+  --video data\caviar\videos\Browse_WhileWaiting1_f620_80f.mp4 `
+  --output outputs\detector\bww1_trt.jsonl `
+  --conf 0.01 --nms 0.45
+```
+
+The TensorRT backend uses the engine's actual input/output tensor names and
+requires a TensorRT 8.5+ engine API. It does not assume a particular NVIDIA
+GPU; a `.engine` remains specific to its CUDA/TensorRT/GPU environment.
 
 ## Local Layout
 

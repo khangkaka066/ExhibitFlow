@@ -477,6 +477,30 @@ DetectionFrame parse_detection_frame(const std::string& line, std::size_t line_n
     }
 }
 
+std::string serialize_detection_frame(const DetectionFrame& frame) {
+    std::ostringstream out;
+    out << std::setprecision(15);
+    out << "{\"schema_version\":\"" << escape_json_string(frame.context.schema_version)
+        << "\",\"sequence_id\":\"" << escape_json_string(frame.context.sequence_id)
+        << "\",\"camera_id\":\"" << escape_json_string(frame.context.camera_id)
+        << "\",\"frame_id\":" << frame.context.frame_id
+        << ",\"timestamp_ms\":" << frame.context.timestamp_ms
+        << ",\"image_size\":{\"width\":" << frame.context.image_size.width
+        << ",\"height\":" << frame.context.image_size.height
+        << "},\"detections\":[";
+    for (std::size_t i = 0; i < frame.detections.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        const Detection& detection = frame.detections[i];
+        out << "{\"bbox\":";
+        append_bbox(out, detection.bbox);
+        out << ",\"score\":" << detection.score << "}";
+    }
+    out << "]}";
+    return out.str();
+}
+
 std::string serialize_track_frame(const TrackFrame& frame) {
     std::ostringstream out;
     out << std::setprecision(15);
