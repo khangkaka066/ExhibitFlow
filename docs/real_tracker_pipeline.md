@@ -118,6 +118,53 @@ The TensorRT backend uses the engine's actual input/output tensor names and
 requires a TensorRT 8.5+ engine API. It does not assume a particular NVIDIA
 GPU; a `.engine` remains specific to its CUDA/TensorRT/GPU environment.
 
+### Choosing CPU or CUDA for the `onnxruntime` backend
+
+The `onnxruntime` backend runs on CPU by default. Pass `--device cuda` to run
+it on an NVIDIA GPU instead — this needs an ONNX Runtime **GPU** build (it
+ships `onnxruntime_providers_cuda` alongside the core library) plus a CUDA
+runtime and cuDNN version compatible with that ONNX Runtime release, and an
+NVIDIA GPU on the machine. `--cuda-device-id N` selects the GPU on a
+multi-GPU machine (defaults to `0`). This flag only applies to the
+`onnxruntime` backend; a TensorRT `.engine` already runs on GPU and does not
+take `--device`.
+
+```bash
+build/bin/exhibitflow_detector \
+  --backend onnxruntime --device cuda --cuda-device-id 0 \
+  --model models/yolox_s_mot17_640.onnx \
+  --video data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
+  --output outputs/detector/bww1_onnx_cuda.jsonl \
+  --conf 0.01 --nms 0.45
+```
+
+If CUDA initialization fails (missing GPU, driver, or mismatched CUDA/cuDNN
+libraries), the detector exits with `detector error: ...` describing the
+ONNX Runtime error instead of silently falling back to CPU.
+
+### Full option reference
+
+```text
+--backend onnxruntime|tensorrt   Required
+--model PATH                     Required (.onnx for onnxruntime, .engine for tensorrt)
+--video PATH                     Required
+--output PATH                    Required; the parent directory must already exist
+--sequence-id ID                 Defaults to the video filename stem
+--camera-id ID                   Defaults to cam_01
+--device cpu|cuda                Defaults to cpu (onnxruntime backend only)
+--cuda-device-id N                Defaults to 0 (onnxruntime + cuda only)
+--input-width N / --input-height N  Default to 640
+--conf N                         Defaults to 0.01
+--nms N                          Defaults to 0.45
+--max-frames N                   Defaults to all frames
+```
+
+The CLI does not create missing output directories and refuses to overwrite
+an existing output file — `mkdir -p` the output directory first, and remove
+or rename any previous run's output before rerunning. It also prints no
+progress while running; it writes a single `processed_frames=... backend=...
+device=...` summary line to stderr once the whole video has been processed.
+
 ## Local Layout
 
 The model repo is expected at:

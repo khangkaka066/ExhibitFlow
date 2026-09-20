@@ -28,6 +28,11 @@ public:
         }
         session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_options_.SetIntraOpNumThreads(4);
+        if (options_.use_cuda) {
+            OrtCUDAProviderOptions cuda_options{};
+            cuda_options.device_id = options_.cuda_device_id;
+            session_options_.AppendExecutionProvider_CUDA(cuda_options);
+        }
         const std::filesystem::path native_model_path(model_path);
         session_ = std::make_unique<Ort::Session>(
             ort_environment(), native_model_path.c_str(), session_options_

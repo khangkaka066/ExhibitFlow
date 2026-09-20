@@ -40,6 +40,78 @@ uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pyt
 The CLI writes logs and errors to stderr. Output JSONL is written only after the
 whole input has been parsed and processed successfully.
 
+## C++ Detector CLI
+
+`exhibitflow_detector` runs the native YOLOX detector (ONNX Runtime or
+TensorRT) directly over a video and writes `DetectionFrame` JSONL. It is
+built automatically when CMake finds OpenCV plus at least one inference
+backend; otherwise it is silently skipped.
+
+Requirements:
+
+- OpenCV dev package (e.g. `sudo apt install libopencv-dev` on Ubuntu)
+- ONNX Runtime C++ release for the `onnxruntime` backend, and/or a TensorRT
+  install plus a built `.engine` file for the `tensorrt` backend
+
+Configure and build with the ONNX Runtime root set:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DEXHIBITFLOW_ONNXRUNTIME_ROOT=/path/to/onnxruntime
+cmake --build build --parallel --target exhibitflow_detector
+```
+
+Confirm the build picked up both dependencies:
+
+```bash
+ldd build/bin/exhibitflow_detector | grep -iE "onnxruntime|opencv"
+```
+
+Run it against a video (creates the output directory's parent first if
+needed — `exhibitflow_detector` does not create missing directories):
+
+```bash
+mkdir -p outputs/detector
+build/bin/exhibitflow_detector \
+  --backend onnxruntime \
+  --model models/yolox_s_mot17_640.onnx \
+  --video data/MV_1.mp4 \
+  --output outputs/detector/mv1.jsonl \
+  --conf 0.01 --nms 0.45
+```
+
+`exhibitflow_detector` writes no progress output while running — for a
+large video the process will appear to hang until it finishes, then prints
+a single summary line (`processed_frames=... backend=... device=...`) to
+stderr. Use `--max-frames N` to time a short run first and estimate the
+full video's duration.
+
+### CPU vs CUDA
+
+The `onnxruntime` backend defaults to CPU. Pass `--device cuda` to run on an
+NVIDIA GPU instead (requires an ONNX Runtime GPU build, a CUDA-capable GPU,
+and matching CUDA/cuDNN runtime libraries installed):
+
+```bash
+# CPU (default)
+build/bin/exhibitflow_detector --backend onnxruntime --device cpu \
+  --model models/yolox_s_mot17_640.onnx --video data/MV_1.mp4 \
+  --output outputs/detector/mv1_cpu.jsonl
+
+# CUDA
+build/bin/exhibitflow_detector --backend onnxruntime --device cuda \
+  --model models/yolox_s_mot17_640.onnx --video data/MV_1.mp4 \
+  --output outputs/detector/mv1_cuda.jsonl
+```
+
+`--cuda-device-id N` selects a GPU on a multi-GPU machine (defaults to `0`).
+`--device cuda` is only valid with `--backend onnxruntime` — a `tensorrt`
+`.engine` is already GPU-only and does not take `--device`.
+
+See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for how to
+build a TensorRT engine from the ONNX model and for the full detector option
+reference.
+
 ## Real Video Pipeline
 
 The project can also run the real ByteTrack-DMA-LTC model repo on CAVIAR video.

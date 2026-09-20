@@ -21,6 +21,8 @@ struct DetectorOptions {
     int input_height = 640;
     float confidence_threshold = 0.01F;
     float nms_threshold = 0.45F;
+    bool use_cuda = false;
+    int cuda_device_id = 0;
 };
 
 class IDetector {

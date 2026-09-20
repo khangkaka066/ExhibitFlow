@@ -22,6 +22,8 @@ struct Options {
     std::string output_path;
     std::string sequence_id;
     std::string camera_id = "cam_01";
+    std::string device = "cpu";
+    int cuda_device_id = 0;
     int input_width = 640;
     int input_height = 640;
     float confidence = 0.01F;
@@ -34,6 +36,8 @@ void print_help() {
                  "--video input.mp4 --output detections.jsonl [options]\n"
                  "  --sequence-id ID    Defaults to video filename stem\n"
                  "  --camera-id ID      Defaults to cam_01\n"
+                 "  --device cpu|cuda   Defaults to cpu (onnxruntime backend only)\n"
+                 "  --cuda-device-id N  Defaults to 0\n"
                  "  --input-width N     Defaults to 640\n"
                  "  --input-height N    Defaults to 640\n"
                  "  --conf N            Defaults to 0.01\n"
@@ -59,6 +63,8 @@ Options parse_options(int argc, char** argv) {
         else if (argument == "--output") options.output_path = value;
         else if (argument == "--sequence-id") options.sequence_id = value;
         else if (argument == "--camera-id") options.camera_id = value;
+        else if (argument == "--device") options.device = value;
+        else if (argument == "--cuda-device-id") options.cuda_device_id = std::stoi(value);
         else if (argument == "--input-width") options.input_width = std::stoi(value);
         else if (argument == "--input-height") options.input_height = std::stoi(value);
         else if (argument == "--conf") options.confidence = std::stof(value);
@@ -72,6 +78,13 @@ Options parse_options(int argc, char** argv) {
     if (options.backend != "onnxruntime" && options.backend != "tensorrt") {
         throw std::invalid_argument("--backend must be onnxruntime or tensorrt");
     }
+    if (options.device != "cpu" && options.device != "cuda") {
+        throw std::invalid_argument("--device must be cpu or cuda");
+    }
+    if (options.device == "cuda" && options.backend != "onnxruntime") {
+        throw std::invalid_argument("--device cuda is only supported with --backend onnxruntime; "
+                                     "TensorRT engines are already GPU-only");
+    }
     if (options.input_width <= 0 || options.input_height <= 0 || options.confidence < 0.0F ||
         options.confidence > 1.0F || options.nms < 0.0F || options.nms > 1.0F || options.max_frames == 0) {
         throw std::invalid_argument("invalid detector dimensions, thresholds, or max frames");
@@ -81,7 +94,8 @@ Options parse_options(int argc, char** argv) {
 
 std::unique_ptr<exhibitflow::IDetector> create_detector(const Options& options) {
     const exhibitflow::DetectorOptions detector_options{
-        options.input_width, options.input_height, options.confidence, options.nms
+        options.input_width, options.input_height, options.confidence, options.nms,
+        options.device == "cuda", options.cuda_device_id
     };
     if (options.backend == "onnxruntime") {
 #if defined(EXHIBITFLOW_WITH_ONNXRUNTIME)
@@ -141,7 +155,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("failed writing detector output");
         }
         fs::rename(temporary_path, options.output_path);
-        std::cerr << "processed_frames=" << frame_id << " backend=" << options.backend << "\n";
+        std::cerr << "processed_frames=" << frame_id << " backend=" << options.backend
+                   << " device=" << options.device << "\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "detector error: " << error.what() << "\n";
