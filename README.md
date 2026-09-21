@@ -61,6 +61,22 @@ MP4 and intermediate MOT rows are saved under `outputs/real_tracker/intermediate
 See [docs/real_tracker_pipeline.md](docs/real_tracker_pipeline.md) for local
 folder layout, required weights, environment checks, and conversion details.
 
+## Run the C++ detector with TensorRT
+
+On Linux with CUDA, TensorRT (`trtexec`), OpenCV development files, and an
+NVIDIA GPU, run:
+
+```bash
+tools/run_tensorrt.sh \
+  data/caviar/videos/Browse_WhileWaiting1_f620_80f.mp4 \
+  outputs/detector/bww1_trt.jsonl \
+  --conf 0.01 --nms 0.45
+```
+
+The script creates the machine-specific FP16 engine when it is missing, builds
+`exhibitflow_detector`, and writes one detection JSON object per video frame.
+Set `REBUILD_ENGINE=1` after changing GPU, CUDA, TensorRT, or the ONNX model.
+
 ## Dashboard wireframe
 
 Open [dashboard/index.html](dashboard/index.html) in a browser for the interactive

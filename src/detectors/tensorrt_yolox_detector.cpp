@@ -43,7 +43,11 @@ template <typename T>
 struct TensorRtDeleter {
     void operator()(T* object) const noexcept {
         if (object != nullptr) {
+#if NV_TENSORRT_MAJOR >= 10
+            delete object;
+#else
             object->destroy();
+#endif
         }
     }
 };

@@ -48,12 +48,16 @@ set_target_properties(exhibitflow_tracker PROPERTIES
 )
 
 option(EXHIBITFLOW_BUILD_DETECTOR "Build the OpenCV detector CLI when dependencies are available" ON)
+option(EXHIBITFLOW_REQUIRE_TENSORRT "Fail configuration unless the TensorRT detector backend is available" OFF)
 set(EXHIBITFLOW_ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime C++ installation")
 set(EXHIBITFLOW_TENSORRT_ROOT "" CACHE PATH "Root directory of an NVIDIA TensorRT installation")
 
 if(EXHIBITFLOW_BUILD_DETECTOR)
     find_package(OpenCV QUIET COMPONENTS core imgproc videoio)
     if(NOT OpenCV_FOUND)
+        if(EXHIBITFLOW_REQUIRE_TENSORRT)
+            message(FATAL_ERROR "TensorRT detector requires OpenCV (core, imgproc, videoio)")
+        endif()
         message(STATUS "C++ detector disabled: OpenCV (core, imgproc, videoio) was not found")
     else()
         add_library(exhibitflow_detector_runtime
@@ -114,6 +118,11 @@ if(EXHIBITFLOW_BUILD_DETECTOR)
             target_compile_definitions(exhibitflow_detector_runtime PUBLIC EXHIBITFLOW_WITH_TENSORRT=1)
             set(EXHIBITFLOW_DETECTOR_BACKEND_FOUND TRUE)
         else()
+            if(EXHIBITFLOW_REQUIRE_TENSORRT)
+                message(FATAL_ERROR
+                    "TensorRT/CUDA was not found. Set EXHIBITFLOW_TENSORRT_ROOT and CUDA_HOME."
+                )
+            endif()
             message(STATUS "TensorRT backend disabled: set EXHIBITFLOW_TENSORRT_ROOT/TENSORRT_ROOT and CUDA_PATH")
         endif()
 
@@ -130,6 +139,8 @@ if(EXHIBITFLOW_BUILD_DETECTOR)
             message(STATUS "C++ detector executable disabled: no inference backend was found")
         endif()
     endif()
+elseif(EXHIBITFLOW_REQUIRE_TENSORRT)
+    message(FATAL_ERROR "EXHIBITFLOW_REQUIRE_TENSORRT requires EXHIBITFLOW_BUILD_DETECTOR=ON")
 endif()
 
 if(BUILD_TESTING)
