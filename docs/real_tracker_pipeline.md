@@ -51,6 +51,17 @@ The script requires `trtexec.exe` from NVIDIA TensorRT on `PATH` and creates
 machine because TensorRT engines depend on the CUDA/TensorRT runtime and GPU
 architecture.
 
+On Linux, the complete engine-build, CMake-build, and inference flow is wrapped
+by one command:
+
+```bash
+tools/run_tensorrt.sh input.mp4 outputs/input.detections.jsonl \
+  --conf 0.01 --nms 0.45
+```
+
+Use `TENSORRT_ROOT=/opt/TensorRT` when TensorRT is outside the system search
+paths, and set `CUDA_HOME` when CUDA is not installed at `/usr/local/cuda`.
+
 Keep ONNX as the portable source artifact. TensorRT engines are tied to the
 TensorRT/CUDA/GPU environment, so build one on each target NVIDIA machine and
 do not replace the ONNX artifact with a single prebuilt engine.
