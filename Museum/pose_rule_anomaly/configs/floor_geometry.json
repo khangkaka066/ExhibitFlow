@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "calibration_status": "approximate_assumed_dimensions",
+  "warning": "Distances use assumed AB=10m and AC=12m, not field measurements. Do not use as an operational alert gate.",
+  "point_definition": {
+    "A": "near-left floor corner",
+    "B": "near-right floor corner",
+    "C": "far-left floor corner",
+    "D": "far-right floor corner"
+  },
+  "image_point_order": ["A", "B", "D", "C"],
+  "assumed_floor_dimensions_m": {"AB_width": 10.0, "AC_depth": 12.0},
+  "assumed_maximum_reachable_distance_m": 0.65,
+  "cameras": {
+    "1": {
+      "image_points": [[185, 799], [1090, 799], [1165, 190], [70, 205]],
+      "floor_points_assumed_m": [[0, 0], [10, 0], [10, 12], [0, 12]]
+    },
+    "2": {
+      "image_points": [[80, 799], [1180, 799], [1220, 235], [40, 255]],
+      "floor_points_assumed_m": [[0, 0], [10, 0], [10, 12], [0, 12]]
+    },
+    "3": {
+      "image_points": [[170, 799], [1090, 799], [1205, 207], [190, 202]],
+      "floor_points_assumed_m": [[0, 0], [10, 0], [10, 12], [0, 12]]
+    }
+  },
+  "diagnostic_cases": [
+    {
+      "case_id": "user_reported_false_positive",
+      "camera_id": 1,
+      "track_id": 3,
+      "frame_id": 3868,
+      "artwork_id": "center_sculpture_right",
+      "known_review": "false_alarm_no_touch"
+    }
+  ]
+}

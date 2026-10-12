@@ -1,0 +1,38 @@
+{
+  "normal_windows": 2868,
+  "scored_windows": 2868,
+  "excluded_windows": 0,
+  "fit_windows": 456,
+  "held_out_segments": {
+    "1": "cam1_seg07",
+    "2": "cam2_seg02",
+    "3": "cam3_seg02"
+  },
+  "per_camera": [
+    {
+      "camera_id": 1,
+      "held_out_segment": "cam1_seg07",
+      "validation_windows": 384,
+      "median_percentile": 0.43798650752464974,
+      "over_p95_rate": 0.033854166666666664,
+      "over_p99_rate": 0.005208333333333333
+    },
+    {
+      "camera_id": 2,
+      "held_out_segment": "cam2_seg02",
+      "validation_windows": 184,
+      "median_percentile": 0.5789473684210527,
+      "over_p95_rate": 0.03804347826086957,
+      "over_p99_rate": 0.010869565217391304
+    },
+    {
+      "camera_id": 3,
+      "held_out_segment": "cam3_seg02",
+      "validation_windows": 30,
+      "median_percentile": 0.8350785340314136,
+      "over_p95_rate": 0.23333333333333334,
+      "over_p99_rate": 0.13333333333333333
+    }
+  ],
+  "claim": "unlabeled normal holdout stability only; no abnormal-behavior accuracy"
+}

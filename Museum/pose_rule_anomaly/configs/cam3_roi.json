@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "camera_id": 3,
+  "image_size": [1280, 800],
+  "source_frame": {
+    "frame_id": 5982,
+    "segment_id": "cam3_seg01",
+    "image_path": "frames/3/24-03-14/16h22m28s_5982.jpg"
+  },
+  "assignment": {
+    "assigned_by": "Codex-assisted visual review",
+    "assigned_at": "2026-10-04",
+    "review_status": "draft_requires_domain_review",
+    "notes": "Left foreground sculpture is partially outside the view; right foreground stone is strongly truncated. Rules should mark edge interactions as insufficient_evidence."
+  },
+  "floor_observable": [[190, 202], [1205, 207], [1279, 680], [1090, 799], [170, 799], [80, 580]],
+  "artwork_rois": [
+    {"id": "left_foreground_sculpture", "polygon": [[70, 0], [241, 0], [258, 339], [174, 540], [83, 537]], "occlusion": "truncated_by_left_edge", "rule_enabled": false},
+    {"id": "rear_center_display", "polygon": [[537, 41], [850, 38], [856, 210], [531, 211]], "interaction_zone": [[440, 145], [925, 145], [975, 315], [405, 315]], "occlusion": "medium", "rule_enabled": true},
+    {"id": "rear_right_display", "polygon": [[917, 39], [1198, 44], [1203, 211], [914, 207]], "occlusion": "medium", "rule_enabled": false},
+    {"id": "right_foreground_stone", "polygon": [[1110, 263], [1279, 245], [1279, 799], [1048, 799]], "occlusion": "truncated_by_right_edge", "rule_enabled": false}
+  ],
+  "pedestal_rois": [
+    {"id": "left_foreground_pedestal", "polygon": [[82, 282], [254, 284], [258, 540], [83, 538]]},
+    {"id": "rear_center_pedestals", "polygon": [[536, 113], [855, 111], [859, 214], [529, 214]]},
+    {"id": "right_foreground_pedestal", "polygon": [[1111, 285], [1279, 261], [1279, 799], [1048, 799]]}
+  ],
+  "barriers": [
+    {
+      "id": "rear_right_barrier",
+      "line": [[878, 202], [1006, 224], [1123, 224], [1214, 207]],
+      "restricted_zone": [[875, 45], [1210, 45], [1214, 207], [1123, 224], [1006, 224], [878, 202]],
+      "allowed_side": "below_line",
+      "occlusion": "medium"
+    }
+  ],
+  "rules_enabled": {"cross_barrier": false, "near_artwork": true, "touch_candidate": true}
+}

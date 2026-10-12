@@ -1,0 +1,1 @@
+"""Stateful spatial candidate rules."""

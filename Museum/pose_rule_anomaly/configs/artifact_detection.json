@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "models": {
+    "grounding_dino": "IDEA-Research/grounding-dino-base",
+    "sam2": "facebook/sam2-hiera-small"
+  },
+  "inference": {
+    "box_threshold": 0.2,
+    "text_threshold": 0.2,
+    "minimum_prior_iou": 0.03
+  },
+  "quality": {
+    "minimum_mask_pixels": 40,
+    "minimum_area_ratio": 0.05,
+    "maximum_area_ratio": 5.0
+  },
+  "cameras": [
+    {
+      "camera_id": 1,
+      "image_size": [1280, 800],
+      "image_path": "artifact_mask_keyframes/cam1_f15975.jpg",
+      "artifacts": [
+        {
+          "artifact_id": "center_sculpture_left",
+          "prompts": ["a classical marble statue", "a museum sculpture"],
+          "expected_polygon": [[702, 25], [765, 26], [778, 191], [704, 190]],
+          "crop_scale": 2.4
+        },
+        {
+          "artifact_id": "center_sculpture_right",
+          "prompts": ["a classical marble statue", "a museum sculpture"],
+          "expected_polygon": [[872, 35], [931, 38], [948, 193], [883, 190]],
+          "crop_scale": 2.4
+        }
+      ]
+    },
+    {
+      "camera_id": 2,
+      "image_size": [1280, 800],
+      "image_path": "artifact_mask_keyframes/cam2_f2816.jpg",
+      "artifacts": [
+        {
+          "artifact_id": "left_bronze_statue",
+          "prompts": ["a bronze statue", "a standing museum sculpture"],
+          "expected_polygon": [[118, 54], [202, 52], [214, 352], [103, 358]],
+          "crop_scale": 2.0
+        },
+        {
+          "artifact_id": "foreground_stone",
+          "prompts": ["an archaeological carved stone artifact", "a stone museum monument"],
+          "expected_polygon": [[689, 347], [902, 338], [927, 791], [682, 792]],
+          "crop_scale": 1.65
+        },
+        {
+          "artifact_id": "right_tomb",
+          "prompts": ["a stone sarcophagus", "an ancient stone tomb"],
+          "expected_polygon": [[963, 177], [1224, 169], [1264, 394], [930, 397]],
+          "crop_scale": 1.75
+        }
+      ]
+    },
+    {
+      "camera_id": 3,
+      "image_size": [1280, 800],
+      "image_path": "artifact_mask_keyframes/cam3_f15654.jpg",
+      "artifacts": [
+        {
+          "artifact_id": "rear_left_bust",
+          "rule_group": "rear_center_display",
+          "prompts": ["a stone bust on a museum pedestal", "a marble bust"],
+          "expected_polygon": [[570, 36], [675, 36], [689, 202], [563, 205]],
+          "crop_scale": 2.2
+        },
+        {
+          "artifact_id": "rear_center_relief",
+          "rule_group": "rear_center_display",
+          "prompts": ["a carved stone relief in a museum", "a stone sculpture"],
+          "expected_polygon": [[666, 34], [772, 34], [783, 205], [661, 205]],
+          "crop_scale": 2.2
+        },
+        {
+          "artifact_id": "rear_right_bust",
+          "rule_group": "rear_center_display",
+          "prompts": ["a stone bust on a museum pedestal", "a marble bust"],
+          "expected_polygon": [[766, 35], [856, 36], [861, 207], [758, 206]],
+          "crop_scale": 2.2
+        }
+      ]
+    }
+  ]
+}

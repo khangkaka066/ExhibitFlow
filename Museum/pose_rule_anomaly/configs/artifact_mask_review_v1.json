@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "reviewed_by": "Codex-assisted visual review",
+  "reviewed_at": "2026-10-04",
+  "operational_scope": "fixed_camera_same_registration_only",
+  "items": [
+    {"source_set": "artifact_mask_proposals", "camera_id": 1, "artifact_id": "center_sculpture_left", "decision": "approved"},
+    {"source_set": "artifact_mask_proposals", "camera_id": 1, "artifact_id": "center_sculpture_right", "decision": "approved", "note": "Mask is correct; the earlier hand polygon was shifted left."},
+    {"source_set": "artifact_mask_proposals", "camera_id": 2, "artifact_id": "left_bronze_statue", "decision": "approved"},
+    {"source_set": "artifact_mask_proposals", "camera_id": 2, "artifact_id": "foreground_stone", "decision": "approved"},
+    {"source_set": "artifact_mask_proposals", "camera_id": 2, "artifact_id": "right_tomb", "decision": "approved"},
+    {"source_set": "artifact_mask_proposals", "camera_id": 3, "artifact_id": "rear_left_bust", "decision": "approved", "note": "Small area is expected because the mask covers the bust, not its pedestal."},
+    {"source_set": "artifact_mask_proposals", "camera_id": 3, "artifact_id": "rear_center_relief", "decision": "approved"},
+    {"source_set": "artifact_mask_retry_cam3", "camera_id": 3, "artifact_id": "rear_right_relief", "decision": "approved", "note": "Retry replaced the rejected duplicate rear_right_bust proposal."},
+    {"source_set": "artifact_mask_proposals", "camera_id": 3, "artifact_id": "rear_right_bust", "decision": "rejected_duplicate_wrong_artifact"}
+  ]
+}

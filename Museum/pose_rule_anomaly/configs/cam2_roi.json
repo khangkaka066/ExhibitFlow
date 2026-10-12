@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "camera_id": 2,
+  "image_size": [1280, 800],
+  "source_frame": {
+    "frame_id": 2933,
+    "segment_id": "cam2_seg01",
+    "image_path": "frames/2/24-03-14/16h22m49s_2933.jpg"
+  },
+  "assignment": {
+    "assigned_by": "Codex-assisted visual review",
+    "assigned_at": "2026-10-04",
+    "review_status": "draft_requires_domain_review",
+    "notes": "Two visible rope systems were annotated. Confirm that the interior side is actually restricted before enabling crossing alerts."
+  },
+  "floor_observable": [[40, 255], [1220, 235], [1279, 730], [1180, 799], [80, 799], [0, 670]],
+  "artwork_rois": [
+    {"id": "left_bronze_statue", "polygon": [[118, 54], [202, 52], [214, 352], [103, 358]], "interaction_zone": [[35, 250], [330, 245], [365, 590], [35, 610]], "occlusion": "low", "rule_enabled": true},
+    {"id": "foreground_stone", "polygon": [[689, 347], [902, 338], [927, 791], [682, 792]], "interaction_zone": [[500, 305], [1050, 295], [1120, 799], [500, 799]], "occlusion": "low", "rule_enabled": true},
+    {"id": "right_tomb", "polygon": [[963, 177], [1224, 169], [1264, 394], [930, 397]], "interaction_zone": [[835, 225], [1279, 220], [1279, 535], [825, 500]], "occlusion": "medium", "rule_enabled": true},
+    {"id": "rear_wall_display", "polygon": [[270, 68], [774, 57], [780, 208], [263, 220]], "occlusion": "medium", "rule_enabled": false}
+  ],
+  "pedestal_rois": [
+    {"id": "left_bronze_pedestal", "polygon": [[116, 263], [207, 260], [216, 385], [106, 388]]},
+    {"id": "foreground_stone_pedestal", "polygon": [[688, 350], [903, 340], [927, 792], [683, 792]]},
+    {"id": "right_tomb_pedestal", "polygon": [[964, 207], [1226, 201], [1265, 396], [930, 397]]}
+  ],
+  "barriers": [
+    {
+      "id": "left_statue_barrier",
+      "line": [[80, 357], [106, 504], [207, 544], [313, 454], [302, 351]],
+      "restricted_zone": [[80, 357], [302, 351], [313, 454], [207, 544], [106, 504]],
+      "allowed_side": "outside_polygon",
+      "occlusion": "low"
+    },
+    {
+      "id": "right_tomb_barrier",
+      "line": [[900, 274], [934, 413], [1221, 450], [1264, 341]],
+      "restricted_zone": [[900, 274], [1264, 250], [1264, 341], [1221, 450], [934, 413]],
+      "allowed_side": "outside_polygon",
+      "occlusion": "medium"
+    }
+  ],
+  "rules_enabled": {"cross_barrier": false, "near_artwork": true, "touch_candidate": true}
+}

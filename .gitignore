@@ -11,3 +11,24 @@ __pycache__/
 *.tmp
 *.log
 pretrained
+
+# Local datasets, videos, generated previews, and upload archives
+/Museum/dataset/
+*.mp4
+/code_segmentation.zip
+/kaggle_upload_bundle.zip
+/retrack_results_preview/
+/review_previews/
+/colab_iforest_normal_motion/annotations.jsonl
+/colab_retracking_upload/anomaly_scores.jsonl
+/tracking_checkpoints/normal_behavior/anomaly_scores.jsonl
+
+# Local projects outside ExhibitFlow
+/ATASX/
+/market_data/
+
+# Local credentials and notebook caches
+.env
+.env.*
+!.env.example
+.ipynb_checkpoints/
