@@ -16,7 +16,7 @@ loguru
 matplotlib
 motmetrics
 ninja
-numpy
+numpy==1.26.4
 onnx
 onnxsim>=0.7.3
 onnxscript>=0.7.2
@@ -31,7 +31,6 @@ scikit-learn
 scipy
 six
 tabulate
-tb-nightly
 tensorboard
 termcolor
 thop
@@ -42,3 +41,10 @@ tqdm
 xgboost
 yacs
 yapf
+# AlphaPose (external/AlphaPose, see `make alphapose-setup`)
+halpecocotools
+munkres
+natsort
+tensorboardx
+terminaltables
+timm==0.1.20

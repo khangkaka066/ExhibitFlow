@@ -1,4 +1,5 @@
 build/
+build-tensorrt/
 cmake-build-*/
 data/
 !task_w1/data/
