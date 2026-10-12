@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "camera_id": 1,
+  "image_size": [1280, 800],
+  "source_frame": {
+    "frame_id": 10102,
+    "segment_id": "cam1_seg05",
+    "image_path": "frames/1/24-03-14/16h53m09s_10102.jpg"
+  },
+  "assignment": {
+    "assigned_by": "Codex-assisted visual review",
+    "assigned_at": "2026-10-04",
+    "review_status": "draft_requires_domain_review",
+    "notes": "Perspective-only annotation from one fixed-camera frame. Confirm allowed_side and physical barrier placement before operational alerts."
+  },
+  "floor_observable": [[70, 205], [1165, 190], [1279, 735], [1090, 799], [185, 799], [0, 640]],
+  "artwork_rois": [
+    {"id": "left_wall_painting", "polygon": [[92, 61], [163, 54], [164, 201], [92, 213]], "occlusion": "low", "rule_enabled": false},
+    {"id": "rear_center_display", "polygon": [[438, 43], [715, 40], [713, 158], [437, 166]], "occlusion": "medium", "rule_enabled": false},
+    {"id": "rear_right_display", "polygon": [[800, 48], [1092, 53], [1088, 199], [797, 180]], "occlusion": "medium", "rule_enabled": false},
+    {"id": "center_sculpture_left", "polygon": [[702, 25], [765, 26], [778, 191], [704, 190]], "interaction_zone": [[570, 145], [805, 142], [830, 292], [540, 292]], "occlusion": "high_when_crowded", "rule_enabled": true},
+    {"id": "center_sculpture_right", "polygon": [[872, 35], [931, 38], [948, 193], [883, 190]], "interaction_zone": [[785, 145], [1025, 148], [1055, 300], [765, 296]], "occlusion": "high_when_crowded", "rule_enabled": true}
+  ],
+  "pedestal_rois": [
+    {"id": "center_left_pedestal", "polygon": [[358, 115], [426, 116], [433, 278], [353, 281]]},
+    {"id": "center_sculpture_pedestals", "polygon": [[626, 128], [952, 139], [958, 284], [621, 264]]}
+  ],
+  "barriers": [
+    {
+      "id": "center_sculpture_barrier",
+      "line": [[604, 224], [697, 251], [811, 258], [934, 245], [1001, 217]],
+      "restricted_zone": [[600, 75], [1005, 77], [1001, 217], [934, 245], [811, 258], [697, 251], [604, 224]],
+      "allowed_side": "below_line",
+      "occlusion": "medium"
+    }
+  ],
+  "rules_enabled": {"cross_barrier": false, "near_artwork": true, "touch_candidate": true}
+}

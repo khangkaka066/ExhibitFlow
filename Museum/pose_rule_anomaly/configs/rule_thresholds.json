@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "max_observation_gap_seconds": 0.75,
+  "barrier": {
+    "restricted_dwell_seconds": 0.4,
+    "minimum_allowed_observations": 2
+  },
+  "artwork": {
+    "near_distance_person_heights": 0.35,
+    "touch_distance_person_heights": 0.10,
+    "minimum_approach_delta_person_heights": 0.10,
+    "minimum_near_dwell_seconds": 0.5,
+    "minimum_touch_observations": 3,
+    "episode_cooldown_seconds": 0.75,
+    "maximum_body_speed_person_heights_per_second": 0.12,
+    "body_speed_context_seconds": 1.0,
+    "maximum_person_bbox_mask_overlap": 0.08,
+    "maximum_wrist_inside_depth_person_heights": 0.03,
+    "minimum_elbow_clearance_person_heights": 0.03,
+    "minimum_shoulder_clearance_person_heights": 0.08,
+    "minimum_wrist_advantage_over_elbow_person_heights": 0.02,
+    "minimum_wrist_lateral_reach_person_heights": 0.12
+  },
+  "fusion": {
+    "unusual_motion_percentile": 0.99,
+    "merge_gap_seconds": 1.0,
+    "event_cooldown_seconds": 1.0
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "models": {
+    "grounding_dino": "IDEA-Research/grounding-dino-base",
+    "sam2": "facebook/sam2-hiera-small"
+  },
+  "inference": {
+    "box_threshold": 0.18,
+    "text_threshold": 0.18,
+    "minimum_prior_iou": 0.2
+  },
+  "quality": {
+    "minimum_mask_pixels": 40,
+    "minimum_area_ratio": 0.05,
+    "maximum_area_ratio": 5.0
+  },
+  "cameras": [
+    {
+      "camera_id": 3,
+      "image_size": [1280, 800],
+      "image_path": "artifact_mask_keyframes/cam3_f15654.jpg",
+      "artifacts": [
+        {
+          "artifact_id": "rear_right_relief",
+          "rule_group": "rear_center_display",
+          "prompts": [
+            "a small framed stone relief on a museum wall",
+            "a carved museum plaque"
+          ],
+          "expected_polygon": [[797, 20], [861, 22], [861, 111], [795, 109]],
+          "crop_scale": 1.8
+        }
+      ]
+    }
+  ]
+}
