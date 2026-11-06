@@ -1,0 +1,22 @@
+# Cấu hình ghi đè (gộp vào exhibitflow/settings.py). Dùng: python main.py --config configs/default.yaml ...
+# Không có khoá nào bắt buộc: bỏ trống = dùng mặc định. Khoá hợp lệ: models, rt, run, cfg, segmentation_cfg, export,
+# exclude_artifacts, manual_artifacts, seg_ref_frames, alarm_onset, vlm_min_conf, vlm_image_set, mask_regions.
+
+models:
+  vlm:                       # cấu hình sản phẩm hiện tại = "8f_512_short" (xem README)
+    n_images: 8              # số ảnh gửi VLM (lấy đều trong 12 ảnh xuất ra)
+    max_side: 512            # cạnh dài tối đa của ảnh (px)
+    short_json: true         # chỉ trả {"label", "confidence"}
+    max_new_tokens: 64
+    # Muốn chính xác hơn (chậm hơn ~3x trên T4, F1 0.74-0.79 thay vì 0.69):
+    #   n_images: 12
+    #   max_side: 768
+    #   short_json: false
+    #   max_new_tokens: 256
+
+rt:
+  pose_gate_norm_dist: 1.5   # chỉ chạy pose + hand cho người cách hiện vật <= 1.5 x chiều cao người (null = mọi người)
+  seg_ref_default: auto      # auto = tự tách cảnh (đổi camera) rồi segment mỗi cảnh | first = chỉ frame đầu
+
+# VLM trả "touching" / "holding" / "stealing" thì cảnh báo. Ngưỡng tin cậy tối thiểu (0 = không lọc):
+vlm_min_conf: 0.0

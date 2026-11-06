@@ -1,0 +1,31 @@
+# ExhibitFlow — thư viện cần thêm (đã có sẵn torch + torchvision + CUDA: Kaggle / Colab đã cài sẵn).
+# Cài bằng:  python scripts/install_deps.py      (xử lý cả xung đột onnxruntime / onnxruntime-gpu)
+numpy
+pandas
+scipy
+opencv-python-headless
+pillow
+pyyaml
+packaging
+imageio-ffmpeg            # H.264 cho live.mp4 (--save-video)
+huggingface_hub           # tải GGUF Qwen3-VL + Grounding-DINO
+transformers>=4.57        # Grounding-DINO (segmenter hiện vật)
+accelerate>=1.0
+safetensors
+ultralytics==8.3.*        # YOLOv8-pose + SAM2
+rtmlib                    # RTMW (bàn tay)
+# onnxruntime-gpu[cuda,cudnn] được cài riêng bởi scripts/install_deps.py (không để rtmlib kéo bản CPU)
+# --- phụ thuộc của repo tracker ByteTrack-DMA-LTC (yolox + ReID + DMA) ---
+gdown
+lap
+cython_bbox
+loguru
+thop
+tabulate
+tensorboard
+yacs
+pycocotools
+scikit-image
+scikit-learn
+filterpy
+motmetrics

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exhibitflow"
+version = "1.0.0"
+description = "Phát hiện hành vi bất thường (chạm / cầm / lấy hiện vật) trong video bảo tàng"
+requires-python = ">=3.10"
+dependencies = ["numpy", "pandas", "opencv-python-headless", "pyyaml"]
+
+[project.scripts]
+exhibitflow = "main:main"
+
+[tool.setuptools]
+packages = ["exhibitflow"]
+py-modules = ["main"]
