@@ -140,7 +140,11 @@ def main():
     cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else []) + (['--no-preload'] if a.no_preload else [])
     if a.data_dir:
         cmd += ['--data-dir', a.data_dir]
-    srv = subprocess.Popen(cmd, cwd=HERE.parent)
+    env = dict(os.environ)
+    for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        env.setdefault(k, '1')                # mỗi stage là 1 thread Python: thư viện số không được tự mở thêm thread
+    env.setdefault('OMP_WAIT_POLICY', 'PASSIVE')   # không spin-wait chiếm CPU khi chờ
+    srv = subprocess.Popen(cmd, cwd=HERE.parent, env=env)
     procs.append(srv)
     for _ in range(120):                      # đợi server lên (và phải là server của mình)
         if srv.poll() is not None:

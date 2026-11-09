@@ -133,6 +133,21 @@ def _ensure_reid_weights(folder: Path) -> Path:
 
 
 @register('tracker', 'bytetrack_dma_ltc')
+def _single_thread_gbm(tracker):
+    """LightGBM (DMA) predict mặc định dùng OpenMP trên mọi core mỗi lần gọi. Batch chỉ vài chục dòng nên song song hoá
+    vô ích, còn khi nhiều thread stage cùng tranh 4 vCPU (Kaggle) thì OpenMP quá tải thread: đo 0.07 ms -> ~110 ms / lần.
+    Ép num_threads=1 (không sửa repo tracker bên ngoài)."""
+    booster = getattr(getattr(getattr(tracker, 'dma', None), 'model', None), 'booster', None)
+    if booster is None or getattr(booster, '_ef_single_thread', False):
+        return
+    orig = booster.predict
+
+    def predict(*a, **k):
+        k.setdefault('num_threads', 1)
+        return orig(*a, **k)
+    booster.predict, booster._ef_single_thread = predict, True
+
+
 class ByteTrackDMALTC:
     """Tham số mặc định = `make track-video-full-torch` (tools/track_video_bench.py)."""
 
@@ -173,6 +188,7 @@ class ByteTrackDMALTC:
         from yolox.tracker.basetrack import BaseTrack
         BaseTrack._count = 0
         self.tracker = BYTETracker(self.args, frame_rate=int(round(fps)))
+        _single_thread_gbm(self.tracker)
         for name, ok in (('DMA GBM', getattr(self.tracker, 'dma', None) is not None),
                          ('LTC motion', getattr(getattr(self.tracker, 'motion_predictor', None), 'enabled', False)),
                          ('ReID', getattr(self.tracker, 'reid_extractor', None) is not None or not self.args.with_reid)):
