@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = dict(
     # --- pipeline ---
     pose_gate_norm_dist=1.5, queue_size=8, max_frames=0, alarm_show_sec=4.0,
     weights_dir='', work_dir='work', use_cpu=False,
+    pipeline_mode='full',             # 'tracking' | 'tracking_seg' (+ segmentation hiện vật, phát hiện chạm) | 'full' (+ VLM, cảnh báo)
     scene_mode='auto',                # 'auto' = tách cảnh nhanh (video có đổi camera) | 'first' = 1 cảnh cố định, bỏ qua tách cảnh
     # --- map 2D: 4 điểm ảnh video (0-1) -> 4 điểm trên map (0-1) ---
     map_image='default',              # 'default' | 'none' | tên file đã upload
@@ -48,6 +49,11 @@ def overrides_from_settings(s):
 
 MODEL_KEYS = ('vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
               'use_cpu', 'work_dir')
+
+
+def need_components(s):
+    from exhibitflow.service import components_for
+    return components_for(s.get('pipeline_mode', 'full'))
 
 
 def model_key(s):
@@ -171,7 +177,7 @@ class PipelineRunner:
         if self.running() or self.loading():
             return
         eng = self.engine
-        if eng is not None and eng.ready and eng.key == model_key(self.state.settings):
+        if eng is not None and eng.key == model_key(self.state.settings) and eng.covers(need_components(self.state.settings)):
             return
         self.loader = threading.Thread(target=self._load, daemon=True, name='model-loader')
         self.loader.start()
@@ -181,7 +187,8 @@ class PipelineRunner:
         with self.load_lock:
             s = dict(st.settings)
             key = model_key(s)
-            if self.engine is not None and self.engine.ready and self.engine.key == key:
+            need = need_components(s)
+            if self.engine is not None and self.engine.key == key and self.engine.covers(need):
                 return
             with st.lock:
                 st.models_state, st.models_msg = 'loading', ''
@@ -195,7 +202,8 @@ class PipelineRunner:
                 if self.engine is None:
                     self.engine = Engine()
                 self.engine.load(overrides=overrides_from_settings(s), work_dir=str(Path(s.get('work_dir') or 'work').resolve()),
-                                 out_dir=str(st.root / 'results'), dry_run_vlm=(s.get('vlm_backend') == 'dry_run'), key=key)
+                                 out_dir=str(st.root / 'results'), dry_run_vlm=(s.get('vlm_backend') == 'dry_run'), key=key,
+                                 components=need)
                 with st.lock:
                     st.models_state = 'ready'
                 st.log('Model đã sẵn sàng')
@@ -329,7 +337,7 @@ class PipelineRunner:
         try:
             s = st.settings
             eng = self.engine
-            if eng is None or not eng.ready or eng.key != model_key(s):     # cấu hình model đổi / chưa nạp -> nạp lại
+            if eng is None or eng.key != model_key(s) or not eng.covers(need_components(s)):   # cấu hình đổi / thiếu thành phần -> nạp lại
                 st.phase = 'Nạp model'
                 self._load()
                 eng = self.engine
@@ -342,7 +350,7 @@ class PipelineRunner:
             eng.on_stage = lambda m: setattr(st, 'phase', m)
             efs.RT['frame_hook'] = self._frame_hook
             efs.RT['alert_hook'] = self._alert_hook
-            res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None)
+            res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None, mode=s.get('pipeline_mode', 'full'))
             with st.lock:
                 st.status, st.phase = 'done', 'Hoàn tất'
             st.log(f"Xong: {res['summary']['n_alerts']} cảnh báo. Kết quả: {st.root / 'results'}")
