@@ -312,12 +312,7 @@ def render_live(ctx, p, e2e_ms):
                     cv2.circle(vis, (int(pt[0]), int(pt[1])), 4, (0, 0, 255), -1)
     st = ctx.sink_times
     live_fps = (len(st) - 1) / (st[-1] - st[0]) if len(st) > 1 and st[-1] > st[0] else 0.0
-    lines = [f"frame {p.idx}  t={p.idx / ctx.fps:.2f}s  [{ctx.mode}{' realtime' if ctx.rt['realtime'] else ''}]",
-             f'pipeline {live_fps:.1f} FPS | e2e {e2e_ms:.0f} ms | dropped {len(ctx.dropped)}',
-             f'VLM queue {ctx.vlm.pending()} | alarms {len(ctx.board.alarms)}']
-    for k, text in enumerate(lines):
-        put_label(vis, text, (8, 22 + 22 * k), (0, 0, 0), 0.55, fg=(0, 255, 255))
-    hook = ctx.rt.get('frame_hook')           # dashboard: nhận frame đã vẽ + tracks (không ảnh hưởng pipeline nếu lỗi)
+    hook = ctx.rt.get('frame_hook')           # dashboard: nhận frame đã vẽ (không có dòng chữ thông số) + tracks
     if hook is not None:
         try:
             hook(ctx, p, vis, dict(fps=live_fps, e2e_ms=e2e_ms))
@@ -325,6 +320,12 @@ def render_live(ctx, p, e2e_ms):
             pass
     if not ctx.rt['render_live']:
         return
+    vis = vis.copy()                           # dòng thông số chỉ ghi vào video lưu ra file, không vẽ lên frame của dashboard
+    lines = [f"frame {p.idx}  t={p.idx / ctx.fps:.2f}s  [{ctx.mode}{' realtime' if ctx.rt['realtime'] else ''}]",
+             f'pipeline {live_fps:.1f} FPS | e2e {e2e_ms:.0f} ms | dropped {len(ctx.dropped)}',
+             f'VLM queue {ctx.vlm.pending()} | alarms {len(ctx.board.alarms)}']
+    for k, text in enumerate(lines):
+        put_label(vis, text, (8, 22 + 22 * k), (0, 0, 0), 0.55, fg=(0, 255, 255))
     if ctx.writer is None:
         ctx.live_tmp = ctx.dir / 'live_raw.mp4'
         ctx.live_size = (vis.shape[1] // 2 * 2, vis.shape[0] // 2 * 2)

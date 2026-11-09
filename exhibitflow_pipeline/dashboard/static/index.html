@@ -261,6 +261,7 @@ async function poll(){
   if(!PB)$('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
   $('#vstat').textContent=ST.status==='running'?'● Online':ST.status==='loading'?'Đang nạp model...':ST.status==='done'?'Hoàn tất':'Chưa chạy';
   if(PB)$('#vstat').textContent='Xem lại · kéo thanh thời gian để tua';
+  else if(ST.status==='done'&&!ST.run)$('#vstat').textContent='Hoàn tất · chưa có bản lưu để tua (xem Nhật ký pipeline; server cần là bản mới: make restart)';
   $('#vstat').style.color=ST.status==='running'?'var(--green)':'var(--mut)';
   const sm=ST.stage_ms||{},ks=Object.keys(sm),slow=ks.sort((a,b)=>sm[b]-sm[a])[0];
   if(!PB)$('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · pipeline ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`+(ks.length?` · ms/frame: `+ks.map(k=>k+' '+sm[k]).join(', ')+` · chậm nhất: ${slow}`:''):'';
