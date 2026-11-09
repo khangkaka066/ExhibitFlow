@@ -13,6 +13,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+# giảm phân mảnh VRAM (GPU nhỏ: segmentation hết bộ nhớ dù còn trống); phải đặt trước khi torch dùng CUDA
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
@@ -32,11 +35,13 @@ FLOORPLAN_CANDIDATES = [
 ]
 
 
-def create_app(data_dir, demo=False, preload=True):
+def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     state = State(data_dir)
-    runner = (DemoRunner if demo else PipelineRunner)(state)
+    runner = (DemoRunner if demo else PipelineRunner)(state, local=local)
     app = FastAPI(title='ExhibitFlow Dashboard')
     app.state.demo = demo
+    if mode:                              # chọn chế độ trước khi nạp model (vd 'tracking' -> không đụng tới VLM)
+        state.save_settings(dict(pipeline_mode=mode))
     if preload:
         runner.preload()                  # nạp model ngay khi server lên (nền)
 
@@ -208,9 +213,14 @@ def main():
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--data-dir', default=str(HERE.parent / 'dashboard_data'))
     ap.add_argument('--demo', action='store_true', help='dữ liệu giả, không cần GPU / trọng số')
+    ap.add_argument('--mode', choices=('tracking', 'tracking_seg', 'full'), default=None,
+                    help='chế độ pipeline (lưu vào settings). tracking / tracking_seg không nạp VLM')
     ap.add_argument('--no-preload', action='store_true', help='không nạp model lúc khởi động (nạp khi bấm Phân tích)')
+    ap.add_argument('--local', action='store_true',
+                    help='máy ít VRAM: không nạp mọi model lên GPU cùng lúc; mỗi video chạy segmentation trước '
+                         '(xong thì giải phóng) rồi mới nạp model tracking')
     a = ap.parse_args()
-    uvicorn.run(create_app(a.data_dir, a.demo, preload=not a.no_preload), host=a.host, port=a.port, log_level='warning')
+    uvicorn.run(create_app(a.data_dir, a.demo, preload=not a.no_preload, mode=a.mode, local=a.local), host=a.host, port=a.port, log_level='warning')
 
 
 if __name__ == '__main__':

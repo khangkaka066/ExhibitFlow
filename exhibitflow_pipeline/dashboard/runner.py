@@ -160,8 +160,9 @@ class State:
 
 # ------------------------------------------------------------------ pipeline thật
 class PipelineRunner:
-    def __init__(self, state: State):
+    def __init__(self, state: State, local=False):
         self.state, self.thread, self.ctx, self.cancel = state, None, None, threading.Event()
+        self.local = local         # True: segmentation rồi mới tracking, không nạp mọi model lên GPU cùng lúc
         self.engine, self.loader, self.load_lock = None, None, threading.Lock()
         state.models_stage = lambda: getattr(self.engine, 'stage', '') if self.engine is not None else ''
 
@@ -203,7 +204,7 @@ class PipelineRunner:
                     self.engine = Engine()
                 self.engine.load(overrides=overrides_from_settings(s), work_dir=str(Path(s.get('work_dir') or 'work').resolve()),
                                  out_dir=str(st.root / 'results'), dry_run_vlm=(s.get('vlm_backend') == 'dry_run'), key=key,
-                                 components=need)
+                                 components=need, local=self.local)
                 with st.lock:
                     st.models_state = 'ready'
                 st.log('Model đã sẵn sàng')

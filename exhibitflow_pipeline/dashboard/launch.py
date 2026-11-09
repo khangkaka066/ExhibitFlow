@@ -130,6 +130,7 @@ def main():
     ap.add_argument('--no-tunnel', action='store_true')
     ap.add_argument('--no-wait-models', action='store_true', help='mở link ngay, không đợi model nạp xong')
     ap.add_argument('--no-preload', action='store_true')
+    ap.add_argument('--mode', choices=('tracking', 'tracking_seg', 'full'), default=None)
     a = ap.parse_args()
     procs = []
     atexit.register(lambda: [p.terminate() for p in procs if p.poll() is None])   # luôn dọn server + tunnel, kể cả khi lỗi
@@ -137,7 +138,7 @@ def main():
         new = free_port()
         print(f'Cổng {a.port} đang bị chiếm (có thể là dashboard của lần chạy trước) -> dùng cổng {new}', flush=True)
         a.port = new
-    cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else []) + (['--no-preload'] if a.no_preload else [])
+    cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else []) + (['--no-preload'] if a.no_preload else []) + (['--mode', a.mode] if a.mode else [])
     if a.data_dir:
         cmd += ['--data-dir', a.data_dir]
     env = dict(os.environ)

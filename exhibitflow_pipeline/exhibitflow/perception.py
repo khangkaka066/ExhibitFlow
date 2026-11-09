@@ -38,7 +38,9 @@ class YoloxDetector(Detector):
             from numpy._core.multiarray import scalar as np_scalar
         except ImportError:
             from numpy.core.multiarray import scalar as np_scalar
-        np_globals = [(np_scalar, 'numpy.core.multiarray.scalar'), np_scalar, np.dtype]
+        # checkpoint lưu bằng numpy 2.x ghi tên 'numpy._core...', numpy 1.x ghi 'numpy.core...': đăng ký cả hai
+        np_globals = [(np_scalar, 'numpy.core.multiarray.scalar'), (np_scalar, 'numpy._core.multiarray.scalar'),
+                      np_scalar, np.dtype]
         np_globals += [type(np.dtype(t)) for t in ('float64', 'float32', 'int64', 'int32')]
         with torch.serialization.safe_globals(np_globals):
             state = torch.load(str(ckpt_path), map_location='cpu', weights_only=True)

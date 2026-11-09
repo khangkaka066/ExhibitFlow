@@ -111,10 +111,11 @@ def merge_standalone_pedestals(artifacts, masks):
 @register('segmenter', 'gdino_sam')
 class GroundingDinoSAM:
     def __init__(self, dino='openmmlab-community/mm_grounding_dino_large_all', sam='sam2.1_b.pt', device=GPU_B,
-                 fp16=True, **_):
+                 fp16=True, dino_size='auto', **_):
         from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
         from ultralytics import SAM
         self.device, self.fp16 = device, bool(fp16 and 'cuda' in str(device))
+        self.dino_size = self._resolve_size(dino_size, device)
         model = AutoModelForZeroShotObjectDetection.from_pretrained(dino)
         _fix_mmgdino_decoder_heads(model, dino)
         self.dino = (model.half() if self.fp16 else model).to(device).eval()
@@ -122,13 +123,29 @@ class GroundingDinoSAM:
         self.sam = SAM(str(resolve_weight(sam)))
         self.lock = threading.Lock()
 
+    @staticmethod
+    def _resolve_size(size, device):
+        """Kích thước ảnh vào Grounding-DINO. None = mặc định của model (800x1333, cần > 5.6 GB VRAM).
+        'auto' = mặc định, trừ khi GPU < 8 GB thì thu nhỏ (cạnh ngắn 640) để không hết VRAM. Hoặc dict(shortest_edge=, longest_edge=)."""
+        if size != 'auto':
+            return size or None
+        try:
+            if 'cuda' in str(device) and torch.cuda.get_device_properties(torch.device(device)).total_memory < 8 * 2**30:
+                print('  [segmenter] GPU < 8 GB: thu nhỏ ảnh vào Grounding-DINO (cạnh ngắn 640) để không hết VRAM '
+                      "(đặt segmenter dino_size=None để dùng kích thước gốc)")
+                return dict(shortest_edge=640, longest_edge=1066)
+        except Exception:
+            pass
+        return None
+
     def warmup(self):
         img = np.zeros((540, 960, 3), np.uint8)
         self.detect(img, ['statue'], 0.3, 0.25)
         self.sam_box(img, [100, 100, 300, 300])
 
     def detect(self, rgb, phrases, thr, text_thr):
-        inputs = self.processor(images=rgb, text=' '.join(f'{p}.' for p in phrases), return_tensors='pt').to(self.device)
+        inputs = self.processor(images=rgb, text=' '.join(f'{p}.' for p in phrases), return_tensors='pt',
+                                **(dict(size=self.dino_size) if self.dino_size else {})).to(self.device)
         with torch.no_grad():
             if self.fp16:
                 inputs['pixel_values'] = inputs['pixel_values'].half()
