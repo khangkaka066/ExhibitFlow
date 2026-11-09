@@ -65,6 +65,11 @@ table.mini th{color:var(--mut);font-weight:600}table.mini th:first-child,table.m
 .bar{display:inline-block;height:6px;background:var(--blue);border-radius:3px;vertical-align:middle;margin-right:6px}
 select.runsel{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:5px 8px;max-width:360px;text-transform:none;letter-spacing:0;font-weight:400}
 .alerts tbody tr.pb{cursor:pointer}.alerts tbody tr.pb:hover{background:var(--card2)}
+.seekrow{display:flex;align-items:center;gap:10px;margin-top:10px}.seekrow .prog{flex:1;margin-top:0}
+#pbPlay{padding:2px 12px;font-size:13px}#seekTime{color:var(--mut);font-size:12px;min-width:92px;text-align:right;display:none}
+.pbmode .prog{height:10px;cursor:pointer;overflow:visible;position:relative;touch-action:none}.pbmode .prog i{border-radius:3px;transition:none}
+.pbmode #seekknob{display:block}#seekknob{display:none;position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px var(--green);pointer-events:none}
+.pbmode #pbPlay,.pbmode #seekTime{display:inline-block!important}
 .prog{height:4px;background:var(--line);border-radius:3px;margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--green);transition:width .3s}
 .mapbox{position:relative;border-radius:9px;overflow:hidden;background:#0b1220;aspect-ratio:1/1}
 .mapbox canvas{width:100%;height:100%;display:block}
@@ -143,11 +148,12 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       </div>
       <div class="vwrap" id="vwrap">
         <img id="vimg" alt="" style="display:none">
-        <video id="vvid" controls playsinline preload="auto"></video><canvas class="ovl" id="vovl"></canvas>
+        <video id="vvid" playsinline preload="auto"></video><canvas class="ovl" id="vovl"></canvas>
         <div class="ph" id="vph">Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.<br><small>Lần đầu nạp model có thể mất vài phút.</small></div>
         <span class="badge live">● LIVE</span><span class="badge time" id="vtime">00:00</span>
       </div>
-      <div class="prog"><i id="progbar"></i></div>
+      <div class="seekrow"><button class="btn" id="pbPlay" style="display:none" title="Phát / tạm dừng (phím cách)">▶</button>
+        <div class="prog" id="seek"><i id="progbar"></i><b id="seekknob"></b></div><span id="seekTime"></span></div>
       <div class="legend" style="margin-top:8px"><span id="vmeta"></span></div>
     </div>
 
@@ -255,7 +261,7 @@ async function poll(){
   $('#btnStart').disabled=run||mload;$('#btnStop').disabled=!run;
   $('#k-src').textContent=ST.source||'—';
   const pct=ST.n_frames?Math.round(100*ST.frame/ST.n_frames):0;
-  $('#k-prog').textContent=pct+'%';$('#progbar').style.width=pct+'%';
+  $('#k-prog').textContent=pct+'%';if(!PB)$('#progbar').style.width=pct+'%';
   $('#k-alerts').textContent=ST.n_alerts;$('#k-det').textContent=ST.detections;
   if(run&&PB)closePB();
   if(!PB)$('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
@@ -323,19 +329,33 @@ async function openRun(id){
   (tl.alerts||[]).forEach(a=>{if(!a.spans||!a.spans.length)a.spans=[[a.start,a.end]]});run.alerts=tl.alerts||[];
   const pb={id,run,tl,last:-1,dirty:true};PB=pb;streaming=false;
   const v=$('#vvid');
-  v.onloadeddata=()=>{if(PB===pb){$('#vwrap').classList.add('pb');pb.dirty=true}};
+  v.onloadeddata=()=>{if(PB===pb){$('#vwrap').classList.add('pb');document.body.classList.add('pbmode');pb.dirty=true}};
   v.onloadedmetadata=()=>{pb.dirty=true};
-  v.onerror=()=>{if(PB!==pb)return;toast('Không phát được video (file gốc còn không?)');PB=null;$('#vwrap').classList.remove('pb');if(ST.n_frames)$('#vimg').style.display='block';loadMap();renderAlerts(true)};
+  v.onerror=()=>{if(PB!==pb)return;toast('Không phát được video (file gốc còn không?)');PB=null;document.body.classList.remove('pbmode');$('#vwrap').classList.remove('pb');if(ST.n_frames)$('#vimg').style.display='block';loadMap();renderAlerts(true)};
   v.src='/api/runs/'+id+'/video';
   $('#vtitle').textContent='Xem lại — '+run.video.name;
   $('#runSel').value=id;$('#runJson').href='/api/runs/'+id;$('#runJson').style.display='';
   renderResult(run);renderAlerts(true);loadMap();tickPB(pb)}
-function closePB(){PB=null;const v=$('#vvid');v.pause();v.removeAttribute('src');v.load();$('#vwrap').classList.remove('pb');loadMap();renderAlerts(true)}
+function closePB(){PB=null;document.body.classList.remove('pbmode');$('#progbar').style.width='0%';$('#seekknob').style.left='0%';const v=$('#vvid');v.pause();v.removeAttribute('src');v.load();$('#vwrap').classList.remove('pb');loadMap();renderAlerts(true)}
 function tickPB(pb){if(PB!==pb)return;
   const f=Math.round($('#vvid').currentTime*(pb.tl.fps||25));
+  const v=$('#vvid'),dur=v.duration||(pb.tl.n_frames/(pb.tl.fps||25)),r=dur?Math.min(1,v.currentTime/dur):0;
+  if(!seeking){$('#progbar').style.width=r*100+'%';$('#seekknob').style.left=r*100+'%'}
+  $('#seekTime').textContent=mmss(v.currentTime)+' / '+mmss(dur);$('#pbPlay').textContent=v.paused?'▶':'⏸';
   if(f!==pb.last||pb.dirty){pb.last=f;pb.dirty=false;drawPB(f)}
   requestAnimationFrame(()=>tickPB(pb))}
 window.addEventListener('resize',()=>{if(PB)PB.dirty=true});
+/* thanh xanh dưới video = thanh tua: bấm hoặc kéo để tới thời điểm bất kỳ; video / nút ⏸ / phím cách để phát - dừng */
+let seeking=false;
+function seekTo(e){const v=$('#vvid'),b=$('#seek').getBoundingClientRect(),r=Math.min(1,Math.max(0,(e.clientX-b.left)/b.width)),dur=v.duration||0;
+  if(!dur)return;v.currentTime=r*dur;$('#progbar').style.width=r*100+'%';$('#seekknob').style.left=r*100+'%';if(PB)PB.dirty=true}
+$('#seek').addEventListener('pointerdown',e=>{if(!PB)return;seeking=true;$('#seek').setPointerCapture(e.pointerId);seekTo(e)});
+$('#seek').addEventListener('pointermove',e=>{if(seeking)seekTo(e)});
+['pointerup','pointercancel'].forEach(t=>$('#seek').addEventListener(t,()=>{seeking=false}));
+const togglePlay=()=>{const v=$('#vvid');if(!PB)return;v.paused?v.play().catch(()=>{}):v.pause()};
+$('#pbPlay').onclick=togglePlay;$('#vvid').onclick=togglePlay;
+document.addEventListener('keydown',e=>{if(PB&&e.code==='Space'&&!/INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)){e.preventDefault();togglePlay()}
+  else if(PB&&(e.code==='ArrowLeft'||e.code==='ArrowRight')&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){const v=$('#vvid');v.currentTime=Math.max(0,v.currentTime+(e.code==='ArrowRight'?1:-1)/(PB.tl.fps||25)*(e.shiftKey?10:1))}});
 const frameAt=f=>{const fr=PB.tl.frames;for(let k=f;k>=Math.max(0,f-12);k--)if(fr[k])return fr[k];return null};
 const alertAt=(tid,f)=>PB.run.alerts.find(a=>a.tid===tid&&a.spans.some(([lo,hi])=>f>=lo&&f<=hi));
 function drawPB(f){
