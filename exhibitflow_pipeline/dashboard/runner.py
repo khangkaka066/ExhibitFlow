@@ -45,6 +45,14 @@ def overrides_from_settings(s):
     return ov
 
 
+MODEL_KEYS = ('vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
+              'use_cpu', 'work_dir')
+
+
+def model_key(s):
+    return tuple(str(s.get(k)) for k in MODEL_KEYS)
+
+
 def homography(h):
     src = np.array(h['src'], np.float32)
     dst = np.array(h['dst'], np.float32)
@@ -67,6 +75,7 @@ class State:
                 self.settings.update(json.loads(self.settings_path.read_text(encoding='utf-8')))
             except Exception:
                 pass
+        self.models_state, self.models_msg = 'idle', ''     # idle | loading | ready | error (độc lập với lần chạy video)
         self.reset()
 
     def save_settings(self, new):
@@ -99,6 +108,7 @@ class State:
             self.logs = deque(maxlen=200)
             self.last_bgr = None
             self.last_tracks = []
+            self.stage_ms = {}
             self._t_jpeg = 0.0
 
     def log(self, msg):
@@ -130,8 +140,9 @@ class State:
             sev = {'high': 0, 'medium': 0, 'low': 0}
             for a in self.alerts:
                 sev[a['severity']] += 1
-            return dict(status=self.status, phase=self.phase, message=self.message, source=self.source,
-                        cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1),
+            return dict(models=dict(state=self.models_state, msg=self.models_msg),
+                        status=self.status, phase=self.phase, message=self.message, source=self.source,
+                        cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1), stage_ms=self.stage_ms,
                         e2e_ms=round(self.e2e_ms), people=self.people, artifacts=self.artifacts,
                         alerts=list(reversed(self.alerts))[:200], n_alerts=len(self.alerts), severity=sev,
                         detections=self.detections_total, logs=list(self.logs)[-40:],
@@ -142,17 +153,64 @@ class State:
 class PipelineRunner:
     def __init__(self, state: State):
         self.state, self.thread, self.ctx, self.cancel = state, None, None, threading.Event()
+        self.engine, self.loader, self.load_lock = None, None, threading.Lock()
 
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
+    def loading(self):
+        return self.loader is not None and self.loader.is_alive()
+
+    # ---- nạp model (nền, ngay khi server lên) ----
+    def preload(self):
+        """Nạp model nếu chưa có / cấu hình model đã đổi. Không làm gì khi đang chạy hoặc đang nạp."""
+        if self.running() or self.loading():
+            return
+        eng = self.engine
+        if eng is not None and eng.ready and eng.key == model_key(self.state.settings):
+            return
+        self.loader = threading.Thread(target=self._load, daemon=True, name='model-loader')
+        self.loader.start()
+
+    def _load(self):
+        st = self.state
+        with self.load_lock:
+            s = dict(st.settings)
+            key = model_key(s)
+            if self.engine is not None and self.engine.ready and self.engine.key == key:
+                return
+            with st.lock:
+                st.models_state, st.models_msg = 'loading', ''
+            st.log('Nạp model (lần đầu có thể tải trọng số, mất vài phút)...')
+            try:
+                import sys
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+                if s.get('use_cpu'):
+                    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+                from exhibitflow.service import Engine
+                if self.engine is None:
+                    self.engine = Engine()
+                self.engine.load(overrides=overrides_from_settings(s), work_dir=str(Path(s.get('work_dir') or 'work').resolve()),
+                                 out_dir=str(st.root / 'results'), dry_run_vlm=(s.get('vlm_backend') == 'dry_run'), key=key)
+                with st.lock:
+                    st.models_state = 'ready'
+                st.log('Model đã sẵn sàng')
+            except BaseException as e:   # noqa: BLE001
+                tb = traceback.format_exc()
+                with st.lock:
+                    st.models_state, st.models_msg = 'error', f'{type(e).__name__}: {e}'
+                st.log('LỖI nạp model: ' + tb[-600:])
+                print(tb, flush=True)
+
     def start(self, video_path):
         if self.running():
             raise RuntimeError('Pipeline đang chạy')
+        if self.loading():
+            raise RuntimeError('Model đang nạp, đợi vài phút rồi thử lại')
         self.state.reset()
         self.cancel.clear()
         self.state.source = Path(video_path).name
-        self.state.status, self.state.phase, self.state.started_at = 'loading', 'Nạp model', time.time()
+        self.state.status, self.state.phase, self.state.started_at = 'loading', 'Chuẩn bị', time.time()
         self.thread = threading.Thread(target=self._run, args=(str(video_path),), daemon=True, name='pipeline')
         self.thread.start()
 
@@ -161,7 +219,11 @@ class PipelineRunner:
         ctx = self.ctx
         if ctx is not None:
             ctx.stop.set()
-        self.state.log('Yêu cầu dừng...')
+        st = self.state
+        with st.lock:
+            if st.status == 'running':
+                st.status, st.phase = 'finishing', 'Đang dừng...'
+        st.log('Yêu cầu dừng...')
 
     # ---- hook trong engine ----
     def _frame_hook(self, ctx, p, vis, perf):
@@ -169,7 +231,7 @@ class PipelineRunner:
         self.ctx = ctx
         if self.cancel.is_set():
             ctx.stop.set()
-        if st.status != 'running':
+        if st.status == 'loading':
             st.status, st.phase = 'running', 'Đang phân tích'
             st.cam_name = ctx.key
             st.log(f'Bắt đầu video {ctx.key}: {ctx.n} frame @ {ctx.fps:.1f}fps')
@@ -196,6 +258,11 @@ class PipelineRunner:
                     q = cv2.perspectiveTransform(np.array([[[xs.mean() / W, ys.max() / Hh]]], np.float32), H)[0][0]
                     arts.append(dict(id=int(aid), x=float(q[0]), y=float(q[1])))
             st.artifacts = arts
+        if p.idx % 20 == 0:                       # ms trung bình mỗi stage trong ~40 frame gần nhất -> thấy nút thắt
+            acc = {}
+            for stage, _, _, ms in list(ctx.rec.rows)[-300:]:
+                acc.setdefault(stage, []).append(ms)
+            st.stage_ms = {k: round(sum(v) / len(v)) for k, v in acc.items() if k != 'read'}
         st.people = people
         st.detections_total += len(p.tracks or [])
         st.set_frame(vis, [dict(id=r['id'], box=list(map(float, r['box']))) for r in p.tracks or []],
@@ -256,29 +323,28 @@ class PipelineRunner:
     def _run(self, video):
         st = self.state
         try:
-            import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-            from exhibitflow import settings as efs
-            from exhibitflow.pipeline import run_pipeline
             s = st.settings
-            if s.get('use_cpu'):
-                import os
-                os.environ['CUDA_VISIBLE_DEVICES'] = ''
+            eng = self.engine
+            if eng is None or not eng.ready or eng.key != model_key(s):     # cấu hình model đổi / chưa nạp -> nạp lại
+                st.phase = 'Nạp model'
+                self._load()
+                eng = self.engine
+                if eng is None or not eng.ready:
+                    raise RuntimeError(st.models_msg or 'Model nạp lỗi')
+            from exhibitflow import settings as efs
+            efs.apply_overrides(overrides_from_settings(s))                # tham số chạy (pose gate, queue, ngưỡng...)
             efs.RT['frame_hook'] = self._frame_hook
             efs.RT['alert_hook'] = self._alert_hook
-            st.log('Nạp model (lần đầu có thể tải trọng số, mất vài phút)...')
-            out = st.root / 'results'
-            run_pipeline([video], out_dir=str(out), work_dir=str(Path(s.get('work_dir') or 'work').resolve()),
-                         overrides=overrides_from_settings(s), max_frames=int(s.get('max_frames') or 0) or None,
-                         dry_run_vlm=(s.get('vlm_backend') == 'dry_run'))
+            res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None)
             with st.lock:
                 st.status, st.phase = 'done', 'Hoàn tất'
-            st.log(f'Xong. Kết quả: {out}')
+            st.log(f"Xong: {res['summary']['n_alerts']} cảnh báo. Kết quả: {st.root / 'results'}")
         except BaseException as e:   # noqa: BLE001
             tb = traceback.format_exc()
             with st.lock:
                 st.status, st.message = 'error', f'{type(e).__name__}: {e}'
             st.log('LỖI: ' + tb[-600:])
+            print(tb, flush=True)
         finally:
             try:
                 from exhibitflow import settings as efs
@@ -291,6 +357,9 @@ class PipelineRunner:
 # ------------------------------------------------------------------ demo (không cần GPU)
 class DemoRunner(PipelineRunner):
     """Sinh frame giả: vài người đi quanh 3 hiện vật; thỉnh thoảng có alert. Chỉ để xem giao diện."""
+
+    def preload(self):
+        self.state.models_state = 'ready'
 
     def start(self, video_path):
         if self.running():

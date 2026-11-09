@@ -213,10 +213,12 @@ const mmss=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%6
 let streaming=false;
 async function poll(){
   try{ST=await api('/api/state')}catch{$('#sysPill').className='pill bad';$('#sysPill').textContent='● Mất kết nối';return}
-  const [t,c]=STAT[ST.status]||['?',''];
-  $('#sysPill').className='pill '+c;$('#sysPill').textContent='● '+(ST.status==='error'?'Lỗi: '+ST.message:t+(ST.phase&&ST.status!=='running'?' — '+ST.phase:''));
+  let [t,c]=STAT[ST.status]||['?',''];
+  const M=ST.models||{state:'idle'},mload=M.state==='loading';
+  if(['idle','done'].includes(ST.status)){if(mload){t='Đang nạp model...';c='warn'}else if(M.state==='ready'){t=ST.status==='done'?'Hoàn tất · model sẵn sàng':'Model sẵn sàng';c='ok'}else if(M.state==='error'){t='Lỗi nạp model';c='bad'}}
+  $('#sysPill').className='pill '+c;$('#sysPill').title=M.msg||'';$('#sysPill').textContent='● '+(ST.status==='error'?'Lỗi: '+ST.message:t+(ST.phase&&ST.status!=='running'&&ST.status!=='done'?' — '+ST.phase:''));
   const run=['loading','running','finishing'].includes(ST.status);
-  $('#btnStart').disabled=run;$('#btnStop').disabled=!run;
+  $('#btnStart').disabled=run||mload;$('#btnStop').disabled=!run;
   $('#k-src').textContent=ST.source||'—';
   const pct=ST.n_frames?Math.round(100*ST.frame/ST.n_frames):0;
   $('#k-prog').textContent=pct+'%';$('#progbar').style.width=pct+'%';
@@ -224,11 +226,13 @@ async function poll(){
   $('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
   $('#vstat').textContent=ST.status==='running'?'● Online':ST.status==='loading'?'Đang nạp model...':ST.status==='done'?'Hoàn tất':'Chưa chạy';
   $('#vstat').style.color=ST.status==='running'?'var(--green)':'var(--mut)';
-  $('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`:'';
+  const sm=ST.stage_ms||{},ks=Object.keys(sm),slow=ks.sort((a,b)=>sm[b]-sm[a])[0];
+  $('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · pipeline ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`+(ks.length?` · ms/frame: `+ks.map(k=>k+' '+sm[k]).join(', ')+` · chậm nhất: ${slow}`:''):'';
   $('#vtime').textContent=mmss(ST.frame/25);
   $('#vwrap').classList.toggle('run',ST.status==='running');
   if((run||ST.status==='done')&&ST.n_frames&&!streaming){streaming=true;$('#vimg').src='/api/stream?'+Date.now();$('#vimg').style.display='block';$('#vph').style.display='none'}
   if(ST.status==='idle'&&streaming){streaming=false}
+  if(ST.status==='idle'&&!streaming)$('#vph').innerHTML=mload?'<b>Đang nạp model...</b><br><small>Có thể mất vài phút lần đầu (tải trọng số). Bấm Phân tích khi hiện "Model sẵn sàng".</small>':M.state==='error'?'<b>Lỗi nạp model</b><br><small>'+(M.msg||'')+'</small>':'Model đã sẵn sàng. Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.';
   if(ST.status==='loading'){$('#vph').style.display='block';$('#vph').innerHTML='<b>'+ST.phase+'</b><br><small>'+(ST.logs.slice(-1)[0]||'')+'</small>'}
   renderAlerts();$('#log').textContent=(ST.logs||[]).join('\n');drawMap(ST.people||[],ST.artifacts||[]);
 }

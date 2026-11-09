@@ -4,6 +4,7 @@
 """
 import argparse
 import atexit
+import json
 import socket
 import os
 import platform
@@ -91,6 +92,25 @@ def wait_url(proc, timeout=60):
     return box.get('url')
 
 
+def wait_models(port, timeout=3600):
+    """Đợi server nạp xong model (ready) hoặc lỗi, để khi in link thì model đã sẵn sàng."""
+    t0, last = time.time(), 0
+    print('Đang nạp model trước khi mở link công khai (lần đầu có thể tải ~6 GB, mất vài phút)...', flush=True)
+    while time.time() - t0 < timeout:
+        try:
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/state', timeout=3) as r:
+                m = json.loads(r.read())['models']
+        except Exception:
+            m = dict(state='loading', msg='')
+        if m['state'] in ('ready', 'error'):
+            return m
+        if time.time() - last > 30:
+            last = time.time()
+            print(f'  ... vẫn đang nạp model ({int(last - t0)}s)', flush=True)
+        time.sleep(2)
+    return dict(state='timeout', msg='quá thời gian chờ')
+
+
 def port_in_use(port):
     with socket.socket() as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
@@ -108,6 +128,8 @@ def main():
     ap.add_argument('--demo', action='store_true')
     ap.add_argument('--data-dir', default=None)
     ap.add_argument('--no-tunnel', action='store_true')
+    ap.add_argument('--no-wait-models', action='store_true', help='mở link ngay, không đợi model nạp xong')
+    ap.add_argument('--no-preload', action='store_true')
     a = ap.parse_args()
     procs = []
     atexit.register(lambda: [p.terminate() for p in procs if p.poll() is None])   # luôn dọn server + tunnel, kể cả khi lỗi
@@ -115,7 +137,7 @@ def main():
         new = free_port()
         print(f'Cổng {a.port} đang bị chiếm (có thể là dashboard của lần chạy trước) -> dùng cổng {new}', flush=True)
         a.port = new
-    cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else [])
+    cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else []) + (['--no-preload'] if a.no_preload else [])
     if a.data_dir:
         cmd += ['--data-dir', a.data_dir]
     srv = subprocess.Popen(cmd, cwd=HERE.parent)
@@ -130,6 +152,13 @@ def main():
         except Exception:
             time.sleep(0.5)
     print(f'Dashboard nội bộ: http://127.0.0.1:{a.port}')
+    if not a.no_wait_models and not a.no_preload:
+        m = wait_models(a.port)
+        if m['state'] == 'ready':
+            print('Model đã sẵn sàng.', flush=True)
+        else:
+            print(f"!!! Model chưa sẵn sàng ({m['state']}): {m['msg']}", flush=True)
+            print('    Dashboard vẫn mở; sửa Settings (vd. thư mục trọng số) rồi lưu để nạp lại.', flush=True)
     tun = None
     if not a.no_tunnel:
         url = None

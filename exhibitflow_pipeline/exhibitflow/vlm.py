@@ -433,6 +433,22 @@ class VLMWorker(threading.Thread):
     def pending(self):
         return self.q.unfinished_tasks
 
+    def cancel_pending(self):
+        """Bỏ các task còn xếp hàng (task đang chạy dở vẫn chạy nốt). Dùng khi người dùng dừng giữa chừng."""
+        n = 0
+        while True:
+            try:
+                item = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:                 # tín hiệu dừng worker: trả lại
+                self.q.put(None)
+                self.q.task_done()
+                break
+            self.q.task_done()
+            n += 1
+        return n
+
     def drain(self):
         self.q.join()
 

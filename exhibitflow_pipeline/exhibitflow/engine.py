@@ -112,8 +112,8 @@ class Stage(threading.Thread):
                         self.ctx.errors.append((self.sname, traceback.format_exc()))
                 self.out_q.put(EOS)
                 return
-            if failed:
-                continue     # stage đã lỗi: tiếp tục rút queue để các stage trước không bị kẹt
+            if failed or self.ctx.stop.is_set():
+                continue     # stage đã lỗi / người dùng bấm dừng: bỏ frame còn trong queue, vẫn rút queue để stage trước không bị kẹt
             try:
                 t0 = time.perf_counter()
                 outs = self.fn(pkt)
@@ -377,6 +377,8 @@ def run_video(exp, key, d, M, vlm, art, mode='parallel', rt=None):
     ctx.t_pipeline_done = time.perf_counter()
     torch.set_num_threads(thr0[0])
     cv2.setNumThreads(thr0[1])
+    if ctx.stop.is_set() and not ctx.errors:
+        vlm.cancel_pending()              # dừng theo yêu cầu: không đợi VLM xử lý hết các đoạn còn xếp hàng
     if RUN['wait_vlm_per_video']:
         vlm.drain()
     ctx.t_all_done = time.perf_counter()

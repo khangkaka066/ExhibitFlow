@@ -32,11 +32,13 @@ FLOORPLAN_CANDIDATES = [
 ]
 
 
-def create_app(data_dir, demo=False):
+def create_app(data_dir, demo=False, preload=True):
     state = State(data_dir)
     runner = (DemoRunner if demo else PipelineRunner)(state)
     app = FastAPI(title='ExhibitFlow Dashboard')
     app.state.demo = demo
+    if preload:
+        runner.preload()                  # nạp model ngay khi server lên (nền)
 
     app.mount('/snapshots', StaticFiles(directory=str(state.root / 'snapshots')), name='snapshots')
     app.mount('/static', StaticFiles(directory=str(HERE / 'static')), name='static')
@@ -89,7 +91,10 @@ def create_app(data_dir, demo=False):
         if runner.running():
             raise HTTPException(409, 'Pipeline đang chạy')
         path = resolve_source(body.get('source', '')) if not demo else (body.get('source') or 'demo.mp4')
-        runner.start(path)
+        try:
+            runner.start(path)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
         return dict(ok=True, source=path)
 
     @app.post('/api/stop')
@@ -150,7 +155,9 @@ def create_app(data_dir, demo=False):
 
     @app.put('/api/settings')
     def put_settings(body: dict):
-        return state.save_settings(body)
+        out = state.save_settings(body)
+        runner.preload()                      # cấu hình model đổi -> nạp lại ở nền (bỏ qua nếu không đổi / đang chạy)
+        return out
 
     # ---------- map ----------
     @app.get('/api/map-image')
@@ -201,8 +208,9 @@ def main():
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--data-dir', default=str(HERE.parent / 'dashboard_data'))
     ap.add_argument('--demo', action='store_true', help='dữ liệu giả, không cần GPU / trọng số')
+    ap.add_argument('--no-preload', action='store_true', help='không nạp model lúc khởi động (nạp khi bấm Phân tích)')
     a = ap.parse_args()
-    uvicorn.run(create_app(a.data_dir, a.demo), host=a.host, port=a.port, log_level='warning')
+    uvicorn.run(create_app(a.data_dir, a.demo, preload=not a.no_preload), host=a.host, port=a.port, log_level='warning')
 
 
 if __name__ == '__main__':
