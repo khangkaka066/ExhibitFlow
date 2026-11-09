@@ -3,6 +3,8 @@
     python -m dashboard.launch --port 8000 [--demo]
 """
 import argparse
+import atexit
+import socket
 import os
 import platform
 import re
@@ -89,6 +91,17 @@ def wait_url(proc, timeout=60):
     return box.get('url')
 
 
+def port_in_use(port):
+    with socket.socket() as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', type=int, default=8000)
@@ -96,11 +109,21 @@ def main():
     ap.add_argument('--data-dir', default=None)
     ap.add_argument('--no-tunnel', action='store_true')
     a = ap.parse_args()
+    procs = []
+    atexit.register(lambda: [p.terminate() for p in procs if p.poll() is None])   # luôn dọn server + tunnel, kể cả khi lỗi
+    if port_in_use(a.port):                   # vd server của lần chạy trước còn sống -> dùng cổng trống khác
+        new = free_port()
+        print(f'Cổng {a.port} đang bị chiếm (có thể là dashboard của lần chạy trước) -> dùng cổng {new}', flush=True)
+        a.port = new
     cmd = [sys.executable, '-m', 'dashboard.server', '--port', str(a.port)] + (['--demo'] if a.demo else [])
     if a.data_dir:
         cmd += ['--data-dir', a.data_dir]
     srv = subprocess.Popen(cmd, cwd=HERE.parent)
-    for _ in range(60):                       # đợi server lên
+    procs.append(srv)
+    for _ in range(120):                      # đợi server lên (và phải là server của mình)
+        if srv.poll() is not None:
+            print(f'!!! Server dashboard thoát sớm (mã {srv.returncode}), xem lỗi ở trên.', flush=True)
+            sys.exit(1)
         try:
             urllib.request.urlopen(f'http://127.0.0.1:{a.port}/api/state', timeout=1)
             break
@@ -115,6 +138,8 @@ def main():
             print(f'Mở tunnel bằng {name} ...', flush=True)
             try:
                 tun = starter()
+                if tun is not None:
+                    procs.append(tun)
             except Exception as e:
                 print(f'  lỗi: {e}', flush=True)
                 tun = None
