@@ -332,14 +332,17 @@ async function openRun(id){
   v.onloadeddata=()=>{if(PB===pb){$('#vwrap').classList.add('pb');document.body.classList.add('pbmode');pb.dirty=true}};
   v.onloadedmetadata=()=>{pb.dirty=true};
   v.onerror=()=>{if(PB!==pb)return;toast('Không phát được video (file gốc còn không?)');PB=null;document.body.classList.remove('pbmode');$('#vwrap').classList.remove('pb');if(ST.n_frames)$('#vimg').style.display='block';loadMap();renderAlerts(true)};
+  if('requestVideoFrameCallback' in v){   // mỗi lần trình duyệt hiển thị 1 frame mới: ghi lại đúng thời điểm của frame đó -> bbox khớp hình
+    const cb=(now,meta)=>{if(PB!==pb)return;pb.mt=meta.mediaTime;pb.dirty=true;v.requestVideoFrameCallback(cb)};v.requestVideoFrameCallback(cb)}
+  v.addEventListener('seeked',()=>{pb.dirty=true});
   v.src='/api/runs/'+id+'/video';
   $('#vtitle').textContent='Xem lại — '+run.video.name;
   $('#runSel').value=id;$('#runJson').href='/api/runs/'+id;$('#runJson').style.display='';
   renderResult(run);renderAlerts(true);loadMap();tickPB(pb)}
 function closePB(){PB=null;document.body.classList.remove('pbmode');$('#progbar').style.width='0%';$('#seekknob').style.left='0%';const v=$('#vvid');v.pause();v.removeAttribute('src');v.load();$('#vwrap').classList.remove('pb');loadMap();renderAlerts(true)}
 function tickPB(pb){if(PB!==pb)return;
-  const f=Math.round($('#vvid').currentTime*(pb.tl.fps||25));
-  const v=$('#vvid'),dur=v.duration||(pb.tl.n_frames/(pb.tl.fps||25)),r=dur?Math.min(1,v.currentTime/dur):0;
+  const v=$('#vvid'),f=Math.round((pb.mt!=null?pb.mt:v.currentTime)*(pb.tl.fps||25));   // pb.mt = thời điểm của frame ĐANG hiển thị
+  const dur=v.duration||(pb.tl.n_frames/(pb.tl.fps||25)),r=dur?Math.min(1,v.currentTime/dur):0;
   if(!seeking){$('#progbar').style.width=r*100+'%';$('#seekknob').style.left=r*100+'%'}
   $('#seekTime').textContent=mmss(v.currentTime)+' / '+mmss(dur);$('#pbPlay').textContent=v.paused?'▶':'⏸';
   if(f!==pb.last||pb.dirty){pb.last=f;pb.dirty=false;drawPB(f)}
