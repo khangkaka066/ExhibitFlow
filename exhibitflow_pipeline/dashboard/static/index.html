@@ -161,6 +161,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <div class="f"><label>Ngưỡng tin cậy VLM tối thiểu</label><input type="number" id="s-vlm_min_conf" step="0.05" min="0" max="1" placeholder="mặc định"></div>
     </div>
     <div class="card"><h2>Pipeline</h2>
+      <div class="f"><label>Tách cảnh (segmentation hiện vật)</label><select id="s-scene_mode"><option value="auto">Tự động (nhanh) — video có đổi cảnh / camera</option><option value="first">Một cảnh cố định — bỏ qua, mở video ngay</option></select><small>Mỗi cảnh có bộ mask hiện vật riêng. Video camera cố định chọn "Một cảnh cố định" để bỏ hẳn bước quét video.</small></div>
       <div class="f"><label>pose_gate_norm_dist</label><input type="number" id="s-pose_gate_norm_dist" step="0.1"><small>Chỉ chạy pose/hand cho người cách hiện vật ≤ k × chiều cao người (0 = mọi người)</small></div>
       <div class="f"><label>queue_size</label><input type="number" id="s-queue_size"></div>
       <div class="f"><label>Giới hạn số frame (0 = cả video)</label><input type="number" id="s-max_frames"></div>
@@ -273,7 +274,7 @@ async function sys(){try{const s=await api('/api/system');const g=s.gpu&&s.gpu[0
     :gauge('Disk',100*s.disk_used/s.disk_total,Math.round(100*s.disk_used/s.disk_total)+'%',s.disk_used+' / '+s.disk_total+' GB','#f08a24'))}catch{}}
 
 /* ---- settings ---- */
-const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image'];
+const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode'];
 let cal={v:[],m:[],H:null,frameImg:null,geo:null};
 async function openSettings(){
   SET=await api('/api/settings');

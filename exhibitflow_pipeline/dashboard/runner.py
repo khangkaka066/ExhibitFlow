@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = dict(
     # --- pipeline ---
     pose_gate_norm_dist=1.5, queue_size=8, max_frames=0, alarm_show_sec=4.0,
     weights_dir='', work_dir='work', use_cpu=False,
+    scene_mode='auto',                # 'auto' = tách cảnh nhanh (video có đổi camera) | 'first' = 1 cảnh cố định, bỏ qua tách cảnh
     # --- map 2D: 4 điểm ảnh video (0-1) -> 4 điểm trên map (0-1) ---
     map_image='default',              # 'default' | 'none' | tên file đã upload
     homography=dict(src=[[0, 0], [1, 0], [1, 1], [0, 1]], dst=[[0, 0], [1, 0], [1, 1], [0, 1]]),
@@ -75,6 +76,7 @@ class State:
                 self.settings.update(json.loads(self.settings_path.read_text(encoding='utf-8')))
             except Exception:
                 pass
+        self.models_stage = lambda: ''                      # runner gắn hàm trả tiến độ nạp
         self.models_state, self.models_msg = 'idle', ''     # idle | loading | ready | error (độc lập với lần chạy video)
         self.reset()
 
@@ -140,7 +142,8 @@ class State:
             sev = {'high': 0, 'medium': 0, 'low': 0}
             for a in self.alerts:
                 sev[a['severity']] += 1
-            return dict(models=dict(state=self.models_state, msg=self.models_msg),
+            return dict(models=dict(state=self.models_state,
+                                    msg=self.models_msg or (self.models_stage() if self.models_state == 'loading' else '')),
                         status=self.status, phase=self.phase, message=self.message, source=self.source,
                         cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1), stage_ms=self.stage_ms,
                         e2e_ms=round(self.e2e_ms), people=self.people, artifacts=self.artifacts,
@@ -154,6 +157,7 @@ class PipelineRunner:
     def __init__(self, state: State):
         self.state, self.thread, self.ctx, self.cancel = state, None, None, threading.Event()
         self.engine, self.loader, self.load_lock = None, None, threading.Lock()
+        state.models_stage = lambda: getattr(self.engine, 'stage', '') if self.engine is not None else ''
 
     def running(self):
         return self.thread is not None and self.thread.is_alive()
@@ -333,6 +337,9 @@ class PipelineRunner:
                     raise RuntimeError(st.models_msg or 'Model nạp lỗi')
             from exhibitflow import settings as efs
             efs.apply_overrides(overrides_from_settings(s))                # tham số chạy (pose gate, queue, ngưỡng...)
+            efs.RT['scene_step_sec'] = 0.2                                 # tách cảnh thưa: so sánh mỗi 0.2s (cảnh luôn dài > 1s)
+            efs.RT['seg_ref_default'] = 'first' if s.get('scene_mode') == 'first' else 'auto'
+            eng.on_stage = lambda m: setattr(st, 'phase', m)
             efs.RT['frame_hook'] = self._frame_hook
             efs.RT['alert_hook'] = self._alert_hook
             res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None)

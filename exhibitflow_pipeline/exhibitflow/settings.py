@@ -77,6 +77,7 @@ RT = dict(
                                 # segment 1 frame cho mỗi cảnh | 'first' = chỉ frame đầu cho cả video
     scene_cut_diff=25.0,        # 'auto': chênh lệch xám trung bình giữa 2 frame liền nhau (ảnh 64x36) >= ngưỡng -> cắt cảnh
                                 # (frame thường ~0-2, cắt cảnh ~30-50)
+    scene_step_sec=0.0,         # 'auto': so sánh mỗi N giây (0 = mọi frame, như benchmark). Dashboard đặt 0.2 để mở video nhanh hơn
     scene_min_sec=1.0,          # 'auto': cảnh ngắn hơn (vd vài frame chuyển cảnh) -> gộp vào cảnh sau
     scene_ref_offset_sec=0.5,   # 'auto': frame segment = đầu cảnh + 0.5s (tránh frame mờ lúc chuyển cảnh)
     artifact_cache=True,        # dùng lại mask hiện vật đã tính (cùng video + cùng segmenter)

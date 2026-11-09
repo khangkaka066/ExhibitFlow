@@ -106,7 +106,7 @@ def wait_models(port, timeout=3600):
             return m
         if time.time() - last > 30:
             last = time.time()
-            print(f'  ... vẫn đang nạp model ({int(last - t0)}s)', flush=True)
+            print(f"  ... vẫn đang nạp model ({int(last - t0)}s): {m.get('msg') or ''}", flush=True)
         time.sleep(2)
     return dict(state='timeout', msg='quá thời gian chờ')
 

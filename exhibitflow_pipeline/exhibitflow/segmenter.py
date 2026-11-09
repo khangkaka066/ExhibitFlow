@@ -325,16 +325,24 @@ def read_frames(d, idxs):
     return out
 
 
-def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, max_frames=None):
+def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, max_frames=None, step_sec=0.0):
     """Tách video thành các cảnh (cắt cảnh / đổi camera) -> [(start_frame, ref_frame)].
-    Cắt cảnh = chênh lệch xám trung bình (ảnh 64x36) giữa 2 frame liền nhau >= diff_thr.
-    Cảnh ngắn hơn min_scene_sec được gộp vào cảnh sau; ref = đầu cảnh + ref_offset_sec."""
+    Cắt cảnh = chênh lệch xám trung bình (ảnh 64x36) giữa 2 mẫu liền nhau >= diff_thr.
+    Cảnh ngắn hơn min_scene_sec được gộp vào cảnh sau; ref = đầu cảnh + ref_offset_sec.
+    step_sec > 0: vẫn giải mã mọi frame (grab) nhưng chỉ chuyển màu + resize + so sánh mỗi step_sec giây -> nhanh hơn nhiều
+    trên video dài. An toàn vì cảnh ngắn hơn min_scene_sec bị gộp; mốc cắt lệch tối đa step_sec."""
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     min_len = max(1, int(min_scene_sec * fps))
+    step = max(1, int(round(step_sec * fps))) if step_sec and step_sec > 0 else 1
     segs, prev, idx = [[0, 0]], None, 0          # [frame bắt đầu, mốc đặt ref]
     try:
         while max_frames is None or idx < max_frames:
+            if step > 1 and idx % step:
+                if not cap.grab():
+                    break
+                idx += 1
+                continue
             ok, f = cap.read()
             if not ok:
                 break
@@ -360,7 +368,8 @@ def video_scenes(key, d):
     spec = next((SEG_REF_FRAMES[k] for k in (key, p.name, p.stem) if k in SEG_REF_FRAMES), RT.get('seg_ref_default', 'first'))
     n = max(1, d['n'])
     if spec == 'auto':
-        scenes = detect_scenes(d['path'], RT['scene_cut_diff'], RT['scene_min_sec'], RT['scene_ref_offset_sec'], max_frames=n)
+        scenes = detect_scenes(d['path'], RT['scene_cut_diff'], RT['scene_min_sec'], RT['scene_ref_offset_sec'], max_frames=n,
+                              step_sec=float(RT.get('scene_step_sec', 0) or 0))
     elif spec in (None, 'first'):
         scenes = [(0, 0)]
     elif isinstance(spec, (int, np.integer)):
@@ -372,9 +381,9 @@ def video_scenes(key, d):
     return [(s, min(max(r, 0), n - 1)) for s, r in scenes if s < n]
 
 
-def segment_scene(key, M, seg, frame, ref_idx, sid):
+def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None):
     """Segment hiện vật trên 1 frame (cache theo video + frame + segmenter) -> artifacts, masks (id đã cộng sid*SCENE_ID_STEP)."""
-    cache_dir = artifact_cache_dir(key, seg.spec, ref_idx)
+    cache_dir = artifact_cache_dir(cache_key or key, seg.spec, ref_idx)
     reg = cache_dir / 'artifacts.json'
     if RT['artifact_cache'] and reg.exists():
         registry, source = json.loads(reg.read_text()), 'cache'
@@ -415,11 +424,13 @@ def prepare_artifacts(key, d, M, seg):
     res = ArtifactResult(key)
     t0 = time.perf_counter()
     try:
+        st = Path(str(d['path'])).stat()               # cache theo nội dung (size + mtime): video khác trùng tên không dùng nhầm mask cũ
+        ckey = f'{key}_{st.st_size:x}{st.st_mtime_ns // 10**6:x}'
         scenes = video_scenes(key, d)
         frames = read_frames(d, [r for _, r in scenes])
         sources, reviews = [], []
         for sid, (start, ref) in enumerate(scenes):
-            arts, masks, src = segment_scene(key, M, seg, frames[ref], ref, sid)
+            arts, masks, src = segment_scene(key, M, seg, frames[ref], ref, sid, cache_key=ckey)
             sources.append(src)
             res.scenes.append(dict(start=start, ref_idx=ref, artifacts=arts, masks=masks))
             res.artifacts += arts
