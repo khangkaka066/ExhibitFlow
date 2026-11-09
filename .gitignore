@@ -36,3 +36,4 @@ pretrained
 
 # Makefile (Vast.ai): trạng thái cài đặt, log, dữ liệu dashboard
 .make/
+/dashboard_data/

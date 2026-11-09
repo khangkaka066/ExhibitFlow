@@ -5,6 +5,7 @@
 #
 # Biến (đặt trước lệnh make):  MODE=full|tracking_seg|tracking   PORT=8000   LOCAL=1 (máy ít VRAM)
 #                              HF_TOKEN=...   HF_REPO=user/repo   PY=python3
+# Kết quả phân tích lưu ở ./dashboard_data/runs/ (đổi bằng DATA=/đường/dẫn).
 # Lệnh khác:  make logs | status | stop | restart | tunnel | setup | clean
 
 SHELL        := /bin/bash
@@ -20,6 +21,8 @@ WORK   := $(ROOT)/.make
 STAMP  := $(WORK)/stamp
 PIDF   := $(WORK)/server.pid
 LOG    := $(WORK)/server.log
+# Kết quả (runs/, uploads/, maps/, snapshots/): thư mục hiện rõ ở gốc repo, mở được bằng trình duyệt file của Vast
+DATA   ?= $(ROOT)/dashboard_data
 
 PY      ?= python3
 PORT    ?= 8000
@@ -76,13 +79,14 @@ $(STAMP)/mapmodels:
 
 ## ---------------- chạy ----------------
 run: setup
-	@mkdir -p $(WORK)/dashboard_data
+	@mkdir -p $(DATA)
 	@if [ -f $(PIDF) ] && kill -0 $$(cat $(PIDF)) 2>/dev/null; then \
 	  echo "[run] dashboard đang chạy (pid $$(cat $(PIDF))). make restart để chạy lại."; \
 	else \
 	  ( cd $(PIPE) && exec $(PY) -m dashboard.server --host 0.0.0.0 --port $(PORT) --mode $(MODE) $(if $(LOCAL),--local) \
-	      --data-dir $(WORK)/dashboard_data ) > $(LOG) 2>&1 & echo $$! > $(PIDF); \
+	      --data-dir $(DATA) ) > $(LOG) 2>&1 & echo $$! > $(PIDF); \
 	  echo "[run] đã chạy nền (pid $$(cat $(PIDF))), mode=$(MODE), port=$(PORT). Log: $(LOG)"; \
+	  echo "[run] kết quả lưu ở: $(DATA)/runs/"; \
 	fi
 	@$(MAKE) --no-print-directory url
 
@@ -109,7 +113,7 @@ restart: stop run
 
 # Link công khai qua Cloudflare Tunnel (chạy foreground; dùng trong tmux/screen). Không cần mở port trên Vast.
 tunnel: setup stop
-	cd $(PIPE) && $(PY) -m dashboard.launch --port $(PORT) --mode $(MODE) --data-dir $(WORK)/dashboard_data
+	cd $(PIPE) && $(PY) -m dashboard.launch --port $(PORT) --mode $(MODE) --data-dir $(DATA)
 
 clean:
 	rm -rf $(STAMP)
