@@ -29,3 +29,4 @@ scikit-image
 scikit-learn
 filterpy
 motmetrics
+shapely>=2.0                    # multicam-2d-floorplan-tracker (map 2D tự tạo từ video)

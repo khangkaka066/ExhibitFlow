@@ -28,11 +28,6 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
 
 VIDEO_EXT = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
-FLOORPLAN_CANDIDATES = [
-    HERE.parent.parent / 'external' / 'multicam-2d-floorplan-tracker' / 'assets' / 'global_2d_map.png',
-    Path(os.environ.get('FLOORPLAN_DIR', '/nonexistent')) / 'assets' / 'global_2d_map.png',
-    HERE / 'static' / 'floorplan_default.png',
-]
 
 
 def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
@@ -167,16 +162,17 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     # ---------- map ----------
     @app.get('/api/map-image')
     def map_image():
-        mi = state.settings.get('map_image', 'default')
+        mi = state.settings.get('map_image', 'auto')
         if mi == 'none':
             raise HTTPException(404)
-        if mi not in ('default', ''):
-            p = state.root / 'uploads' / mi
-            if p.is_file():
-                return FileResponse(p)
-        for p in FLOORPLAN_CANDIDATES:
-            if p.is_file():
-                return FileResponse(p)
+        if mi in ('auto', 'default', ''):          # map tự tạo từ video đang phân tích; chưa phân tích -> trống
+            p = state.map_path
+            if p is not None and Path(p).is_file():
+                return FileResponse(p, headers={'Cache-Control': 'no-store'})
+            raise HTTPException(404)
+        p = state.root / 'uploads' / mi
+        if p.is_file():
+            return FileResponse(p)
         raise HTTPException(404)
 
     @app.post('/api/map-image')

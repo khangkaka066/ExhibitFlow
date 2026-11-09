@@ -29,7 +29,7 @@ DEFAULT_SETTINGS = dict(
     pipeline_mode='full',             # 'tracking' | 'tracking_seg' (+ segmentation hiện vật, phát hiện chạm) | 'full' (+ VLM, cảnh báo)
     scene_mode='auto',                # 'auto' = tách cảnh nhanh (video có đổi camera) | 'first' = 1 cảnh cố định, bỏ qua tách cảnh
     # --- map 2D: 4 điểm ảnh video (0-1) -> 4 điểm trên map (0-1) ---
-    map_image='default',              # 'default' | 'none' | tên file đã upload
+    map_image='auto',                 # 'auto' (tạo từ video khi phân tích; trống lúc đầu) | 'none' | tên file đã upload (hiệu chỉnh tay)
     homography=dict(src=[[0, 0], [1, 0], [1, 1], [0, 1]], dst=[[0, 0], [1, 0], [1, 1], [0, 1]]),
 )
 
@@ -60,6 +60,10 @@ def model_key(s):
     return tuple(str(s.get(k)) for k in MODEL_KEYS)
 
 
+def auto_map(s):
+    return s.get('map_image', 'auto') in ('auto', 'default', '')
+
+
 def homography(h):
     src = np.array(h['src'], np.float32)
     dst = np.array(h['dst'], np.float32)
@@ -82,8 +86,11 @@ class State:
                 self.settings.update(json.loads(self.settings_path.read_text(encoding='utf-8')))
             except Exception:
                 pass
+        if self.settings.get('map_image') in ('default', ''):    # cài đặt cũ (map mặc định CITIC) -> map tự tạo
+            self.settings['map_image'] = 'auto'
         self.models_stage = lambda: ''                      # runner gắn hàm trả tiến độ nạp
         self.models_state, self.models_msg = 'idle', ''     # idle | loading | ready | error (độc lập với lần chạy video)
+        self.map_version = 0                                # tăng mỗi khi map tự tạo đổi / bị xoá -> giao diện tải lại ảnh
         self.reset()
 
     def save_settings(self, new):
@@ -118,6 +125,8 @@ class State:
             self.last_tracks = []
             self.stage_ms = {}
             self._t_jpeg = 0.0
+            self.map_path, self.map_H = None, None      # map 2D tự tạo từ video + homography chuẩn hoá video -> map
+            self.map_version += 1
 
     def log(self, msg):
         with self.lock:
@@ -150,7 +159,7 @@ class State:
                 sev[a['severity']] += 1
             return dict(models=dict(state=self.models_state,
                                     msg=self.models_msg or (self.models_stage() if self.models_state == 'loading' else '')),
-                        status=self.status, phase=self.phase, message=self.message, source=self.source,
+                        map=self.map_version, status=self.status, phase=self.phase, message=self.message, source=self.source,
                         cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1), stage_ms=self.stage_ms,
                         e2e_ms=round(self.e2e_ms), people=self.people, artifacts=self.artifacts,
                         alerts=list(reversed(self.alerts))[:200], n_alerts=len(self.alerts), severity=sev,
@@ -249,6 +258,8 @@ class PipelineRunner:
             st.cam_name = ctx.key
             st.log(f'Bắt đầu video {ctx.key}: {ctx.n} frame @ {ctx.fps:.1f}fps')
         H = homography(st.settings['homography'])
+        if auto_map(st.settings):                  # map tự tạo: dùng homography ước lượng từ video (chưa có -> đồng nhất)
+            H = np.array(st.map_H, np.float64) if st.map_H is not None else np.eye(3)
         W, Hh = vis.shape[1], vis.shape[0]
         people = []
         pts = []
@@ -333,10 +344,29 @@ class PipelineRunner:
         ok, buf = cv2.imencode('.jpg', c, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return buf.tobytes() if ok else None
 
-    def _run(self, video):
+    def _make_map(self, video):
+        """Tạo map 2D từ video bằng multicam-2d-floorplan-tracker (tiến trình riêng, CPU). Lỗi -> map trống, pipeline vẫn chạy."""
         st = self.state
         try:
+            from dashboard import mapgen
+            out = st.root / 'maps' / time.strftime('%Y%m%d_%H%M%S')
+            st.log('Tạo map 2D từ video...')
+            info = mapgen.generate(video, out, log=st.log)
+            with st.lock:
+                st.map_path, st.map_H = out / 'map.png', info['homography']
+                st.map_version += 1
+            st.log(f"Đã tạo map 2D ({info['method']})")
+        except BaseException as e:   # noqa: BLE001
+            st.log(f'Không tạo được map 2D: {type(e).__name__}: {e}')
+
+    def _run(self, video):
+        st = self.state
+        map_thread = None
+        try:
             s = st.settings
+            if auto_map(s):                            # chạy song song với nạp model
+                map_thread = threading.Thread(target=self._make_map, args=(video,), daemon=True, name='map-gen')
+                map_thread.start()
             eng = self.engine
             if eng is None or eng.key != model_key(s) or not eng.covers(need_components(s)):   # cấu hình đổi / thiếu thành phần -> nạp lại
                 st.phase = 'Nạp model'
@@ -351,6 +381,9 @@ class PipelineRunner:
             eng.on_stage = lambda m: setattr(st, 'phase', m)
             efs.RT['frame_hook'] = self._frame_hook
             efs.RT['alert_hook'] = self._alert_hook
+            if map_thread is not None:                 # cần homography trước khi chiếu người lên map
+                st.phase = 'Tạo map 2D'
+                map_thread.join()
             res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None, mode=s.get('pipeline_mode', 'full'))
             with st.lock:
                 st.status, st.phase = 'done', 'Hoàn tất'

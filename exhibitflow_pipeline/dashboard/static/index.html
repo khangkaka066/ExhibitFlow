@@ -172,7 +172,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <div class="f chk"><input type="checkbox" id="s-use_cpu"><label>Chạy CPU (rất chậm)</label></div>
     </div>
     <div class="card"><h2>Map 2D</h2>
-      <div class="f"><label>Ảnh nền floorplan</label><select id="s-map_image"><option value="default">Mặc định (multicam-2d-floorplan-tracker)</option><option value="none">Không dùng ảnh (lưới trống)</option></select></div>
+      <div class="f"><label>Ảnh nền floorplan</label><select id="s-map_image"><option value="auto">Tự động (tạo từ video khi phân tích)</option><option value="none">Không dùng ảnh (lưới trống)</option></select></div>
       <div class="f"><label>Upload floorplan khác</label><input type="file" id="mapFile" accept="image/*"></div>
       <small style="color:var(--mut)">Hiệu chỉnh map: bấm 4 điểm trên khung hình video (ở trái), sau đó 4 điểm tương ứng trên map (ở phải), cùng thứ tự. Chọn điểm trên mặt sàn.</small>
     </div>
@@ -191,7 +191,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600)};
 const api=async(u,o)=>{const r=await fetch(u,o);if(!r.ok){let d='';try{d=(await r.json()).detail}catch{}throw new Error(d||r.statusText)}return r.json()};
-let ST={}, SET={}, mapImg=null;
+let ST={}, SET={}, mapImg=null, mapVer=null;
 
 /* ---- nav ---- */
 $$('nav a').forEach(a=>a.onclick=()=>{$$('nav a').forEach(x=>x.classList.toggle('on',x===a));
@@ -215,6 +215,7 @@ const mmss=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%6
 let streaming=false;
 async function poll(){
   try{ST=await api('/api/state')}catch{$('#sysPill').className='pill bad';$('#sysPill').textContent='● Mất kết nối';return}
+  if(ST.map!==mapVer){mapVer=ST.map;loadMap()}
   let [t,c]=STAT[ST.status]||['?',''];
   const M=ST.models||{state:'idle'},mload=M.state==='loading';
   if(['idle','done'].includes(ST.status)){if(mload){t='Đang nạp model...';c='warn'}else if(M.state==='ready'){t=ST.status==='done'?'Hoàn tất · model sẵn sàng':'Model sẵn sàng';c='ok'}else if(M.state==='error'){t='Lỗi nạp model';c='bad'}}
@@ -279,8 +280,8 @@ const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','
 let cal={v:[],m:[],H:null,frameImg:null,geo:null};
 async function openSettings(){
   SET=await api('/api/settings');
-  const mi=$('#s-map_image');[...mi.options].forEach(o=>{if(!['default','none'].includes(o.value))o.remove()});
-  if(!['default','none'].includes(SET.map_image)){const o=new Option('Upload: '+SET.map_image,SET.map_image);mi.add(o)}
+  const mi=$('#s-map_image');[...mi.options].forEach(o=>{if(!['auto','none'].includes(o.value))o.remove()});
+  if(!['auto','none'].includes(SET.map_image)){const o=new Option('Upload: '+SET.map_image,SET.map_image);mi.add(o)}
   FIELDS.forEach(k=>{const e=$('#s-'+k);if(e.type==='checkbox')e.checked=!!SET[k];else e.value=SET[k]??''});
   cal.v=[];cal.m=[];
   cal.frameImg=null;const im=new Image();im.onload=()=>{cal.frameImg=im;drawCal()};im.onerror=()=>drawCal();im.src='/api/frame?'+Date.now();drawCal();
