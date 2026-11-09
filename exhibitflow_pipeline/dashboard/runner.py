@@ -7,6 +7,8 @@
 import json
 import math
 import os
+import re
+import shutil
 import threading
 import time
 import traceback
@@ -125,8 +127,11 @@ class State:
             self.last_tracks = []
             self.stage_ms = {}
             self._t_jpeg = 0.0
-            self.map_path, self.map_H = None, None      # map 2D tự tạo từ video + homography chuẩn hoá video -> map
+            self.map_path, self.map_H, self.map_info = None, None, None   # map 2D tự tạo từ video + homography chuẩn hoá video -> map
             self.map_version += 1
+            self.timeline = {}               # frame -> [[box...], [vị trí trên map...]] để xem lại + tua video
+            self.scene_contours = []         # đường viền hiện vật theo cảnh (vẽ lại khi xem lại)
+            self.run_id = None               # id lần chạy đã lưu (runs/<id>/)
 
     def log(self, msg):
         with self.lock:
@@ -159,7 +164,7 @@ class State:
                 sev[a['severity']] += 1
             return dict(models=dict(state=self.models_state,
                                     msg=self.models_msg or (self.models_stage() if self.models_state == 'loading' else '')),
-                        map=self.map_version, status=self.status, phase=self.phase, message=self.message, source=self.source,
+                        map=self.map_version, run=self.run_id, status=self.status, phase=self.phase, message=self.message, source=self.source,
                         cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1), stage_ms=self.stage_ms,
                         e2e_ms=round(self.e2e_ms), people=self.people, artifacts=self.artifacts,
                         alerts=list(reversed(self.alerts))[:200], n_alerts=len(self.alerts), severity=sev,
@@ -266,14 +271,29 @@ class PipelineRunner:
         for r in p.tracks or []:
             x1, y1, x2, y2 = r['box']
             pts.append([[((x1 + x2) / 2) / W, y2 / Hh]])
+        contact = {s['track_id'] for s in (p.states or []) if s['state'] == 'CONTACT_LIKE'}
         if pts:
             proj = cv2.perspectiveTransform(np.array(pts, np.float32), H)
-            contact = {s['track_id'] for s in (p.states or []) if s['state'] == 'CONTACT_LIKE'}
             alarms = ctx.board.active(p.idx, int(ctx.rt['alarm_show_sec'] * ctx.fps))
             for r, q in zip(p.tracks, proj):
                 tid = r['id']
                 state = 'alert' if tid in alarms else 'contact' if tid in contact else 'idle'
                 people.append(dict(id=int(tid), x=float(q[0][0]), y=float(q[0][1]), state=state))
+        # ghi lại để xem lại / tua: box (0-1 theo khung hình) + trạng thái chạm + vị trí trên map. Khung đỏ tính lúc xem lại từ
+        # đoạn báo động của event (VLM trả lời trễ hơn lúc chạm, nên không ghi màu đỏ tại thời điểm chạy)
+        st.timeline[int(p.idx)] = [
+            [[int(r['id']), *(round(float(v), 4) for v in (r['box'][0] / W, r['box'][1] / Hh, r['box'][2] / W, r['box'][3] / Hh)),
+              1 if r['id'] in contact else 0] for r in p.tracks or []],
+            [[q['id'], round(q['x'], 4), round(q['y'], 4)] for q in people]]
+        if not st.scene_contours and ctx.scenes:
+            for sc in ctx.scenes:
+                arts = []
+                for aid, mk in sc['masks'].items():
+                    cs, _ = cv2.findContours(mk.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    polys = [[[round(float(x) / W, 4), round(float(y) / Hh, 4)] for x, y in cv2.approxPolyDP(c, 2.0, True)[:, 0]]
+                             for c in sorted(cs, key=cv2.contourArea, reverse=True)[:3] if len(c) >= 3]
+                    arts.append(dict(id=int(aid), c=polys))
+                st.scene_contours.append(dict(start=int(sc['start']), arts=arts))
         if not st.artifacts and ctx.scenes:
             arts = []
             for aid, mk in ctx.scenes[0]['masks'].items():
@@ -344,18 +364,68 @@ class PipelineRunner:
         ok, buf = cv2.imencode('.jpg', c, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return buf.tobytes() if ok else None
 
+    def _save_run(self, video, res, s):
+        """Lưu mỗi lần phân tích: runs/<id>/run.json (thông tin video, latency từng module + VLM), timeline.json (xem lại / tua), map.png."""
+        st = self.state
+        v, perf, cfg = res['video'], res.get('performance') or {}, res.get('config') or {}
+        rid = time.strftime('%Y%m%d_%H%M%S') + '_' + re.sub(r'[^\w.-]+', '_', Path(video).stem)[:40]
+        d = st.root / 'runs' / rid
+        d.mkdir(parents=True, exist_ok=True)
+        alerts = [dict(tid=int(e['track_id']), behavior=e.get('behavior'), conf=e.get('vlm_confidence'), artifact_id=e.get('artifact_id'),
+                       hand=e.get('hand'), start=int(e['start_frame']), end=int(e['end_frame']), evidence=e.get('vlm_evidence'),
+                       spans=[[int(a), int(b)] for a, b in (e.get('alarm_spans') or [])])
+                  for e in res.get('events', []) if e.get('decision') == 'ANOMALY']
+        has_map = bool(st.map_path and Path(st.map_path).is_file())
+        if has_map:
+            shutil.copy(st.map_path, d / 'map.png')
+        try:
+            size_mb = round(Path(video).stat().st_size / 1e6, 1)
+        except OSError:
+            size_mb = None
+        with st.lock:
+            frames, artifacts, scenes = dict(st.timeline), list(st.artifacts), list(st.scene_contours)
+            alerts_ui = list(st.alerts)
+        keep = ('pipeline_mode', 'scene_mode', 'max_frames', 'queue_size', 'pose_gate_norm_dist', 'vlm_backend', 'vlm_n_images',
+                'vlm_max_side', 'vlm_max_new_tokens', 'map_image')
+        info = dict(id=rid, created=time.strftime('%Y-%m-%d %H:%M:%S'),
+                    video=dict(name=v.get('name'), path=str(Path(video).resolve()), size_mb=size_mb, fps=v.get('fps'),
+                               n_frames=v.get('n_frames'), width=v.get('width'), height=v.get('height'),
+                               duration_s=round(v['n_frames'] / v['fps'], 2) if v.get('fps') else None),
+                    mode=res.get('mode'), settings={k: s.get(k) for k in keep}, local=bool(self.local),
+                    prepare=dict(res.get('prepare') or {}, map=st.map_info), load_times=cfg.get('load_times'),
+                    environment=cfg.get('environment'), performance=perf, summary=res.get('summary'),
+                    vlm_tasks=[{k: t.get(k) for k in ('task', 'track_id', 'status', 'decision', 'label', 'confidence', 'n_images',
+                                                      'n_input_tokens', 'latency_s', 'infer_s', 'prefill_s', 'queue_wait_s', 'error')}
+                               for t in res.get('vlm_tasks', [])],
+                    alerts=alerts, alerts_ui=alerts_ui, has_map=has_map)
+        (d / 'run.json').write_text(json.dumps(info, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
+        (d / 'timeline.json').write_text(json.dumps(dict(fps=v.get('fps'), n_frames=v.get('n_frames'), width=v.get('width'),
+                                                         height=v.get('height'), frames=frames, alerts=alerts, artifacts=artifacts,
+                                                         scenes=scenes), separators=(',', ':'), default=str), encoding='utf-8')
+        with st.lock:
+            st.run_id = rid
+        st.log(f'Đã lưu kết quả lần chạy: {d}')
+
     def _make_map(self, video):
         """Tạo map 2D từ video bằng multicam-2d-floorplan-tracker (tiến trình riêng, CPU). Lỗi -> map trống, pipeline vẫn chạy."""
         st = self.state
         try:
             from dashboard import mapgen
-            out = st.root / 'maps' / time.strftime('%Y%m%d_%H%M%S')
-            st.log('Tạo map 2D từ video...')
-            info = mapgen.generate(video, out, log=st.log)
+            t0 = time.time()
+            vp = Path(video)
+            stt = vp.stat()                                    # khoá theo nội dung (size + mtime): video đã phân tích thì dùng lại map
+            out = st.root / 'maps' / f'{vp.stem}_{stt.st_size:x}{stt.st_mtime_ns // 10**6:x}'
+            if (out / 'map.png').is_file() and (out / 'map_info.json').is_file():
+                info, src = json.loads((out / 'map_info.json').read_text()), 'cache'
+                st.log('Dùng lại map 2D đã tạo cho video này')
+            else:
+                st.log('Tạo map 2D từ video...')
+                info, src = mapgen.generate(video, out, log=st.log), 'computed'
             with st.lock:
                 st.map_path, st.map_H = out / 'map.png', info['homography']
+                st.map_info = dict(method=info['method'], source=src, seconds=round(time.time() - t0, 2))
                 st.map_version += 1
-            st.log(f"Đã tạo map 2D ({info['method']})")
+            st.log(f"Map 2D sẵn sàng ({info['method']}, {src})")
         except BaseException as e:   # noqa: BLE001
             st.log(f'Không tạo được map 2D: {type(e).__name__}: {e}')
 
@@ -385,6 +455,10 @@ class PipelineRunner:
                 st.phase = 'Tạo map 2D'
                 map_thread.join()
             res = eng.run(video, max_frames=int(s.get('max_frames') or 0) or None, mode=s.get('pipeline_mode', 'full'))
+            try:
+                self._save_run(video, res, s)
+            except Exception:                                  # lưu lịch sử lỗi không được làm hỏng lần chạy
+                st.log('Không lưu được kết quả lần chạy: ' + traceback.format_exc()[-300:])
             with st.lock:
                 st.status, st.phase = 'done', 'Hoàn tất'
             st.log(f"Xong: {res['summary']['n_alerts']} cảnh báo. Kết quả: {st.root / 'results'}")

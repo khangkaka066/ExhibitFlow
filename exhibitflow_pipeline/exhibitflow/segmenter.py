@@ -398,6 +398,19 @@ def video_scenes(key, d):
     return [(s, min(max(r, 0), n - 1)) for s, r in scenes if s < n]
 
 
+def cached_video_scenes(ckey, key, d):
+    """video_scenes() có cache theo nội dung video: chạy lại cùng video không phải quét tách cảnh nữa."""
+    tag = spec_tag(dict(cut=RT['scene_cut_diff'], step=RT.get('scene_step_sec'), mn=RT['scene_min_sec'], off=RT['scene_ref_offset_sec'],
+                        ref=RT.get('seg_ref_default'), n=d['n'], k=SEG_REF_FRAMES.get(key)))
+    f = settings.CACHE / f'{ckey}_scenes_{tag}.json'
+    if RT['artifact_cache'] and f.exists():
+        return [tuple(x) for x in json.loads(f.read_text())]
+    scenes = video_scenes(key, d)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(scenes))
+    return scenes
+
+
 def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None):
     """Segment hiện vật trên 1 frame (cache theo video + frame + segmenter) -> artifacts, masks (id đã cộng sid*SCENE_ID_STEP)."""
     cache_dir = artifact_cache_dir(cache_key or key, seg.spec, ref_idx)
@@ -443,7 +456,7 @@ def prepare_artifacts(key, d, M, seg):
     try:
         st = Path(str(d['path'])).stat()               # cache theo nội dung (size + mtime): video khác trùng tên không dùng nhầm mask cũ
         ckey = f'{key}_{st.st_size:x}{st.st_mtime_ns // 10**6:x}'
-        scenes = video_scenes(key, d)
+        scenes = cached_video_scenes(ckey, key, d)
         frames = read_frames(d, [r for _, r in scenes])
         sources, reviews = [], []
         for sid, (start, ref) in enumerate(scenes):

@@ -212,6 +212,8 @@ class Engine:
             recs = [r for r in vlm.records if r['task_id'].startswith(f'{exp}/{key}/')]
             res = video_result(ctx, vpath, d, self.models, recs, M.load_times)
             res['mode'] = mode
+            res['prepare'] = dict(segmentation_s=art.timing.get('seconds'), segmentation_source=art.timing.get('source'),
+                                  n_scenes=len(art.scenes), n_artifacts=len(art.artifacts))
             _write_json(ctx.dir / 'result.json', res)
             ctx.M = ctx.vlm = None
             return res

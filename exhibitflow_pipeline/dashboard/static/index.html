@@ -45,6 +45,26 @@ header h1{font-size:20px;margin:0;letter-spacing:.5px;flex:1;min-width:200px}
 .vwrap.run .badge{display:block}
 .srcbar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 .srcbar input[type=text]{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.srcpick{position:relative;flex:1;min-width:180px;display:flex}
+.srcpick input[type=text]{flex:1;min-width:0;border-radius:8px 0 0 8px}
+.srcpick .dd{border:1px solid var(--line);border-left:0;border-radius:0 8px 8px 0;background:var(--card2);padding:0 12px;cursor:pointer}
+.droplist{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;max-height:280px;overflow:auto;background:var(--card2);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0008;display:none}
+.droplist.on{display:block}
+.droplist div{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--line)}
+.droplist div:last-child{border:0}.droplist div:hover{background:var(--line)}
+.droplist small{color:var(--mut);margin-left:auto;white-space:nowrap}
+.vwrap video{width:100%;height:100%;object-fit:contain;background:#000;display:none}
+.vwrap canvas.ovl{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}
+.vwrap.pb video,.vwrap.pb canvas.ovl{display:block}.vwrap.pb img,.vwrap.pb .ph{display:none!important}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:16px}
+.res .k{background:var(--card2);border-radius:8px;padding:8px 12px}.res .k small{display:block;color:var(--mut)}.res .k b{font-size:17px}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:20px}@media(max-width:1100px){.cols2{grid-template-columns:1fr}}
+table.mini{width:100%;border-collapse:collapse;font-size:13px}table.mini th,table.mini td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+table.mini th{color:var(--mut);font-weight:600}table.mini th:first-child,table.mini td:first-child{text-align:left}
+.tag{padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700;margin-left:6px}.tag.cache{background:#14532d;color:#86efac}.tag.new{background:#4a3b0a;color:#fcd34d}
+.bar{display:inline-block;height:6px;background:var(--blue);border-radius:3px;vertical-align:middle;margin-right:6px}
+select.runsel{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:5px 8px;max-width:360px;text-transform:none;letter-spacing:0;font-weight:400}
+.alerts tbody tr.pb{cursor:pointer}.alerts tbody tr.pb:hover{background:var(--card2)}
 .prog{height:4px;background:var(--line);border-radius:3px;margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--green);transition:width .3s}
 .mapbox{position:relative;border-radius:9px;overflow:hidden;background:#0b1220;aspect-ratio:1/1}
 .mapbox canvas{width:100%;height:100%;display:block}
@@ -111,7 +131,11 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
     <div class="card">
       <h2><span id="vtitle">Video phân tích</span><span class="sp"></span><span id="vstat" style="color:var(--mut);text-transform:none;letter-spacing:0;font-weight:400">Chưa chạy</span></h2>
       <div class="srcbar">
-        <input type="text" id="srcText" placeholder="Đường dẫn file / thư mục / URL video (.mp4 ...)">
+        <div class="srcpick">
+          <input type="text" id="srcText" placeholder="Đường dẫn file / thư mục / URL video (.mp4 ...)">
+          <button class="dd" id="srcDrop" title="Chọn lại một video đã upload">▾</button>
+          <div class="droplist" id="dropList"></div>
+        </div>
         <input type="file" id="srcFile" accept="video/*" hidden>
         <button class="btn" id="btnUpload">⬆ Upload</button>
         <button class="btn pri" id="btnStart">▶ Phân tích</button>
@@ -119,6 +143,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       </div>
       <div class="vwrap" id="vwrap">
         <img id="vimg" alt="" style="display:none">
+        <video id="vvid" controls playsinline preload="auto"></video><canvas class="ovl" id="vovl"></canvas>
         <div class="ph" id="vph">Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.<br><small>Lần đầu nạp model có thể mất vài phút.</small></div>
         <span class="badge live">● LIVE</span><span class="badge time" id="vtime">00:00</span>
       </div>
@@ -145,6 +170,11 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <h2>System status</h2>
       <div class="gauges" style="grid-template-columns:repeat(2,1fr)" id="gauges"></div>
     </div>
+  </div>
+  <div class="card" id="resCard">
+    <h2>Kết quả phân tích <span class="sp"></span><select class="runsel" id="runSel"><option value="">(chưa có lần chạy nào)</option></select>
+      <a class="btn" id="runJson" target="_blank" style="text-decoration:none;font-size:12px;padding:4px 10px;text-transform:none;display:none">JSON</a></h2>
+    <div id="resBody" style="color:var(--mut)">Chưa có lần phân tích nào. Kết quả mỗi lần chạy (thông tin video, latency từng module, VLM) được lưu tại <code>dashboard_data/runs/</code>.</div>
   </div>
   <div class="card"><h2>Nhật ký pipeline</h2><pre class="log" id="log"></pre></div>
 </section>
@@ -191,7 +221,8 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600)};
 const api=async(u,o)=>{const r=await fetch(u,o);if(!r.ok){let d='';try{d=(await r.json()).detail}catch{}throw new Error(d||r.statusText)}return r.json()};
-let ST={}, SET={}, mapImg=null, mapVer=null;
+let ST={}, SET={}, mapImg=null, mapVer=null, PB=null, autoRun=null, RUNS=[];
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ---- nav ---- */
 $$('nav a').forEach(a=>a.onclick=()=>{$$('nav a').forEach(x=>x.classList.toggle('on',x===a));
@@ -226,24 +257,27 @@ async function poll(){
   const pct=ST.n_frames?Math.round(100*ST.frame/ST.n_frames):0;
   $('#k-prog').textContent=pct+'%';$('#progbar').style.width=pct+'%';
   $('#k-alerts').textContent=ST.n_alerts;$('#k-det').textContent=ST.detections;
-  $('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
+  if(run&&PB)closePB();
+  if(!PB)$('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
   $('#vstat').textContent=ST.status==='running'?'● Online':ST.status==='loading'?'Đang nạp model...':ST.status==='done'?'Hoàn tất':'Chưa chạy';
+  if(PB)$('#vstat').textContent='Xem lại · kéo thanh thời gian để tua';
   $('#vstat').style.color=ST.status==='running'?'var(--green)':'var(--mut)';
   const sm=ST.stage_ms||{},ks=Object.keys(sm),slow=ks.sort((a,b)=>sm[b]-sm[a])[0];
-  $('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · pipeline ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`+(ks.length?` · ms/frame: `+ks.map(k=>k+' '+sm[k]).join(', ')+` · chậm nhất: ${slow}`:''):'';
+  if(!PB)$('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · pipeline ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`+(ks.length?` · ms/frame: `+ks.map(k=>k+' '+sm[k]).join(', ')+` · chậm nhất: ${slow}`:''):'';
   $('#vtime').textContent=mmss(ST.frame/25);
   $('#vwrap').classList.toggle('run',ST.status==='running');
-  if((run||ST.status==='done')&&ST.n_frames&&!streaming){streaming=true;$('#vimg').src='/api/stream?'+Date.now();$('#vimg').style.display='block';$('#vph').style.display='none'}
+  if((run||ST.status==='done')&&ST.n_frames&&!streaming&&!PB){streaming=true;$('#vimg').src='/api/stream?'+Date.now();$('#vimg').style.display='block';$('#vph').style.display='none'}
   if(ST.status==='idle'&&streaming){streaming=false}
-  if(ST.status==='idle'&&!streaming)$('#vph').innerHTML=mload?'<b>Đang nạp model...</b><br><small>Có thể mất vài phút lần đầu (tải trọng số). Bấm Phân tích khi hiện "Model sẵn sàng".</small>':M.state==='error'?'<b>Lỗi nạp model</b><br><small>'+(M.msg||'')+'</small>':'Model đã sẵn sàng. Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.';
+  if(ST.status==='idle'&&!streaming&&!PB)$('#vph').innerHTML=mload?'<b>Đang nạp model...</b><br><small>Có thể mất vài phút lần đầu (tải trọng số). Bấm Phân tích khi hiện "Model sẵn sàng".</small>':M.state==='error'?'<b>Lỗi nạp model</b><br><small>'+(M.msg||'')+'</small>':'Model đã sẵn sàng. Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.';
   if(ST.status==='loading'){$('#vph').style.display='block';$('#vph').innerHTML='<b>'+ST.phase+'</b><br><small>'+(ST.logs.slice(-1)[0]||'')+'</small>'}
-  renderAlerts();$('#log').textContent=(ST.logs||[]).join('\n');drawMap(ST.people||[],ST.artifacts||[]);
+  if(ST.status==='done'&&ST.run&&ST.run!==autoRun){autoRun=ST.run;loadRuns().then(()=>openRun(ST.run))}   // xong -> chuyển sang xem lại (có thanh tua)
+  renderAlerts();$('#log').textContent=(ST.logs||[]).join('\n');if(!PB)drawMap(ST.people||[],ST.artifacts||[]);
 }
-function renderAlerts(){
-  const tb=$('#alertRows');$('#alertEmpty').style.display=ST.alerts.length?'none':'block';
-  const key=ST.alerts.map(a=>a.id).join();if(tb.dataset.k===key)return;tb.dataset.k=key;
+function renderAlerts(force){
+  const AL=PB&&PB.run.alerts_ui?PB.run.alerts_ui:(ST.alerts||[]),tb=$('#alertRows');$('#alertEmpty').style.display=AL.length?'none':'block';
+  const key=AL.map(a=>a.id).join()+'|'+(PB?PB.id:'');if(!force&&tb.dataset.k===key)return;tb.dataset.k=key;
   const vn={touching:'Chạm',holding:'Cầm',stealing:'Lấy cắp'};
-  tb.innerHTML=ST.alerts.map(a=>`<tr><td>${a.id}</td><td>${a.time}<br><small style="color:var(--mut)">video ${a.video_time}s · ${a.camera}</small></td>
+  tb.innerHTML=AL.map(a=>`<tr data-tid="${a.track_id}"${PB?' class="pb" title="Bấm để tua tới lúc xảy ra"':''}><td>${a.id}</td><td>${a.time}<br><small style="color:var(--mut)">video ${a.video_time}s · ${a.camera}</small></td>
   <td><div class="who">${a.person_img?`<img class="thumb" src="${a.person_img}">`:'<div class="thumb"></div>'}<div><b>Người ID ${a.track_id}</b></div></div></td>
   <td><div class="who">${a.artifact_img?`<img class="thumb" src="${a.artifact_img}">`:'<div class="thumb"></div>'}<div><b>Hiện vật ${a.artifact_ids.join(', ')||'—'}</b></div></div></td>
   <td>${vn[a.behavior]||a.behavior}</td><td><span class="sev ${a.severity}">${a.severity.toUpperCase()}</span></td><td>${a.confidence}</td>
@@ -251,7 +285,8 @@ function renderAlerts(){
 }
 
 /* ---- map ---- */
-function loadMap(){mapImg=null;const i=new Image();i.onload=()=>{mapImg=i;drawMap(ST.people||[],ST.artifacts||[])};i.onerror=()=>{mapImg=null};i.src='/api/map-image?'+Date.now()}
+function loadMap(){mapImg=null;const i=new Image();i.onload=()=>{mapImg=i;if(PB)PB.dirty=true;else drawMap(ST.people||[],ST.artifacts||[])};i.onerror=()=>{mapImg=null;if(PB)PB.dirty=true};
+  i.src=(PB?'/api/runs/'+PB.id+'/map':'/api/map-image')+'?'+Date.now()}
 function drawMapOn(cv,people,arts,withDots=true){
   const c=cv.getContext('2d'),W=cv.width,H=cv.height;c.fillStyle='#0b1220';c.fillRect(0,0,W,H);
   let ox=0,oy=0,w=W,h=H;
@@ -266,6 +301,90 @@ function drawMapOn(cv,people,arts,withDots=true){
   return {ox,oy,w,h};
 }
 function drawMap(p,a){drawMapOn($('#map'),p,a);$('#mapmeta').textContent=p.length+' người'}
+
+/* ---- video đã upload (mũi tên xổ xuống) ---- */
+$('#srcDrop').onclick=async e=>{e.stopPropagation();const L=$('#dropList');
+  if(!L.classList.toggle('on'))return;
+  let u=[];try{u=await api('/api/uploads')}catch{}
+  const cnt={};RUNS.forEach(r=>{cnt[r.video]=(cnt[r.video]||0)+1});
+  L.innerHTML=u.length?u.map(x=>`<div data-p="${esc(x.path)}"><span>${esc(x.name)}</span><small>${x.size_mb} MB${cnt[x.name]?' · đã phân tích '+cnt[x.name]+' lần (dùng lại cache)':''}</small></div>`).join(''):'<div style="color:var(--mut);cursor:default">Chưa có video nào được upload.</div>'};
+$('#dropList').onclick=e=>{const d=e.target.closest('[data-p]');if(d){$('#srcText').value=d.dataset.p;$('#dropList').classList.remove('on')}};
+document.addEventListener('click',e=>{if(!e.target.closest('.srcpick'))$('#dropList').classList.remove('on')});
+
+/* ---- xem lại: video có thanh tua + khung / map đồng bộ theo frame ---- */
+async function loadRuns(){try{RUNS=await api('/api/runs')}catch{RUNS=[]}
+  const sel=$('#runSel');
+  sel.innerHTML=RUNS.length?RUNS.map(r=>`<option value="${esc(r.id)}">${esc(r.created.slice(5,16))} · ${esc(r.video)} · ${esc(r.mode||'')}</option>`).join(''):'<option value="">(chưa có lần chạy nào)</option>';
+  if(PB)sel.value=PB.id}
+$('#runSel').onchange=e=>{if(!e.target.value)return;if(['loading','running','finishing'].includes(ST.status)){toast('Đang chạy, đợi xong rồi xem lại');if(PB)e.target.value=PB.id;return}openRun(e.target.value)};
+async function openRun(id){
+  let run,tl;try{[run,tl]=await Promise.all([api('/api/runs/'+id),api('/api/runs/'+id+'/timeline')])}catch(x){toast('Không mở được lần chạy: '+x.message);return}
+  (tl.alerts||[]).forEach(a=>{if(!a.spans||!a.spans.length)a.spans=[[a.start,a.end]]});run.alerts=tl.alerts||[];
+  const pb={id,run,tl,last:-1,dirty:true};PB=pb;streaming=false;
+  const v=$('#vvid');
+  v.onloadeddata=()=>{if(PB===pb){$('#vwrap').classList.add('pb');pb.dirty=true}};
+  v.onloadedmetadata=()=>{pb.dirty=true};
+  v.onerror=()=>{if(PB!==pb)return;toast('Không phát được video (file gốc còn không?)');PB=null;$('#vwrap').classList.remove('pb');if(ST.n_frames)$('#vimg').style.display='block';loadMap();renderAlerts(true)};
+  v.src='/api/runs/'+id+'/video';
+  $('#vtitle').textContent='Xem lại — '+run.video.name;
+  $('#runSel').value=id;$('#runJson').href='/api/runs/'+id;$('#runJson').style.display='';
+  renderResult(run);renderAlerts(true);loadMap();tickPB(pb)}
+function closePB(){PB=null;const v=$('#vvid');v.pause();v.removeAttribute('src');v.load();$('#vwrap').classList.remove('pb');loadMap();renderAlerts(true)}
+function tickPB(pb){if(PB!==pb)return;
+  const f=Math.round($('#vvid').currentTime*(pb.tl.fps||25));
+  if(f!==pb.last||pb.dirty){pb.last=f;pb.dirty=false;drawPB(f)}
+  requestAnimationFrame(()=>tickPB(pb))}
+window.addEventListener('resize',()=>{if(PB)PB.dirty=true});
+const frameAt=f=>{const fr=PB.tl.frames;for(let k=f;k>=Math.max(0,f-12);k--)if(fr[k])return fr[k];return null};
+const alertAt=(tid,f)=>PB.run.alerts.find(a=>a.tid===tid&&a.spans.some(([lo,hi])=>f>=lo&&f<=hi));
+function drawPB(f){
+  const v=$('#vvid'),cv=$('#vovl'),box=$('#vwrap'),dpr=window.devicePixelRatio||1,W=box.clientWidth,H=box.clientHeight;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr)}
+  const c=cv.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,W,H);
+  const vw=v.videoWidth||PB.tl.width,vh=v.videoHeight||PB.tl.height,s=Math.min(W/vw,H/vh),w=vw*s,h=vh*s,ox=(W-w)/2,oy=(H-h)/2;
+  const sc=[...(PB.tl.scenes||[])].reverse().find(x=>x.start<=f)||(PB.tl.scenes||[])[0];
+  if(sc){c.fillStyle='rgba(74,100,255,.28)';c.strokeStyle='rgba(120,150,255,.9)';c.lineWidth=1.5;
+    sc.arts.forEach(a=>a.c.forEach(p=>{c.beginPath();p.forEach(([x,y],i)=>i?c.lineTo(ox+x*w,oy+y*h):c.moveTo(ox+x*w,oy+y*h));c.closePath();c.fill();c.stroke()}))}
+  const d=frameAt(f),people=[],red=new Set();
+  if(d){const stt={};
+    d[0].forEach(([id,x1,y1,x2,y2,ct])=>{const al=alertAt(id,f),col=al?'#ef4444':ct?'#facc15':'#22c55e';stt[id]=al?'alert':ct?'contact':'idle';if(al)red.add(id);
+      c.strokeStyle=col;c.lineWidth=al?3:2;c.strokeRect(ox+x1*w,oy+y1*h,(x2-x1)*w,(y2-y1)*h);
+      const t='ID '+id+(al?' | '+String(al.behavior||'').toUpperCase():ct?' | contact?':'');c.font='bold 12px sans-serif';
+      c.fillStyle='#000';c.fillRect(ox+x1*w,oy+y1*h-17,c.measureText(t).width+8,16);c.fillStyle=col;c.fillText(t,ox+x1*w+4,oy+y1*h-5)});
+    d[1].forEach(([id,x,y])=>people.push({id,x,y,state:stt[id]||'idle'}))}
+  drawMap(people,PB.tl.artifacts||[]);
+  const fps=PB.tl.fps||25;$('#vmeta').textContent=`frame ${f}/${PB.tl.n_frames} · ${mmss(f/fps)} / ${mmss(PB.tl.n_frames/fps)}`+(red.size?` · cảnh báo: người ID ${[...red].join(', ')}`:'')}
+$('#alertRows').onclick=e=>{const tr=e.target.closest('tr[data-tid]');if(!tr||!PB)return;
+  const a=PB.run.alerts.find(x=>x.tid===+tr.dataset.tid);if(!a)return;const v=$('#vvid');v.currentTime=Math.max(0,a.spans[0][0]/(PB.tl.fps||25)-.5);v.play().catch(()=>{})};
+
+/* ---- kết quả phân tích: thông tin video + latency từng module (kể cả VLM) ---- */
+const f1=(v,d=1)=>v==null?'—':(+v).toFixed(d);
+const tag=s=>s==='cache'?'<span class="tag cache">dùng cache</span>':s?'<span class="tag new">tính mới</span>':'';
+function renderResult(r){
+  const v=r.video,p=r.performance||{},pr=r.prepare||{},mp=pr.map||{},sm=r.summary||{},e2e=p.e2e_ms||{},stg=p.stages||{},vl=p.vlm||{},gpus=(r.environment||{}).gpus||[];
+  const K=(a,b,c)=>`<div class="k"><small>${a}</small><b>${b}</b><small>${c||''}</small></div>`;
+  const mx=Math.max(1,...Object.values(stg).map(x=>x.mean_ms||0));
+  const rows=Object.entries(stg).sort((a,b)=>(b[1].mean_ms||0)-(a[1].mean_ms||0)).map(([k,x])=>`<tr><td>${esc(k)}</td><td><span class="bar" style="width:${Math.round(70*(x.mean_ms||0)/mx)}px"></span>${f1(x.mean_ms)}</td><td>${f1(x.p95_ms)}</td></tr>`).join('');
+  const lt=Object.entries(r.load_times||{}).map(([k,x])=>`<tr><td>${esc(k)}</td><td>${f1(x&&x.load_s,2)}</td><td>${f1(x&&x.warmup_s,2)}</td></tr>`).join('');
+  const vt=(r.vlm_tasks||[]).filter(t=>t.latency_s!=null||t.infer_s!=null).map(t=>`<tr><td>${esc(t.task)}</td><td>${esc(t.label||t.status||'')}</td><td>${f1(t.confidence,2)}</td><td>${f1(t.queue_wait_s,2)}</td><td>${f1(t.prefill_s,2)}</td><td>${f1(t.infer_s,2)}</td><td>${f1(t.latency_s,2)}</td></tr>`).join('');
+  $('#resBody').style.color='';
+  $('#resBody').innerHTML=`<div class="res">
+    ${K('Video',esc(v.name),`${v.width}×${v.height} · ${f1(v.fps)} fps`)}${K('Thời lượng',f1(v.duration_s)+' s',`${v.n_frames} frame`+(v.size_mb?` · ${v.size_mb} MB`:''))}
+    ${K('Chế độ',esc(r.mode||'—'),(r.local?'local · ':'')+esc(gpus.join(', ')))}${K('FPS pipeline',f1(p.pipeline_fps),`${f1(p.wall_s)} s tổng · bỏ ${p.frames_dropped||0} frame`)}
+    ${K('Latency e2e (mean)',f1(e2e.mean,0)+' ms','p95 '+f1(e2e.p95,0)+' ms')}${K('Cảnh báo',sm.n_alerts??'—',`${sm.n_people_tracks??'—'} người · ${sm.n_events??'—'} event · ${sm.n_vlm_tasks??0} lượt VLM`)}</div>
+  <div class="cols2"><div>
+    <table class="mini"><thead><tr><th>Module (ms / frame)</th><th>trung bình</th><th>p95</th></tr></thead><tbody>${rows||'<tr><td colspan=3>—</td></tr>'}</tbody></table>
+    <table class="mini" style="margin-top:14px"><thead><tr><th>Chuẩn bị (1 lần / video)</th><th>giây</th><th></th></tr></thead><tbody>
+      <tr><td>Segmentation hiện vật${tag(pr.segmentation_source)}</td><td>${f1(pr.segmentation_s,2)}</td><td>${pr.n_artifacts??'—'} hiện vật</td></tr>
+      <tr><td>Map 2D${tag(mp.source)}</td><td>${f1(mp.seconds,2)}</td><td>${esc(mp.method||'—')}</td></tr></tbody></table>
+  </div><div>
+    <table class="mini"><thead><tr><th>VLM</th><th>trung bình</th><th>p95</th></tr></thead><tbody>
+      <tr><td>Suy luận (s)</td><td>${f1(vl.infer_mean_s,2)}</td><td>${f1(vl.infer_p95_s,2)}</td></tr>
+      <tr><td>Chờ hàng đợi (s)</td><td>${f1(vl.queue_wait_mean_s,2)}</td><td></td></tr>
+      <tr><td>Số lượt (thành công)</td><td>${vl.n_tasks??0} (${vl.n_ok??0})</td><td></td></tr></tbody></table>
+    ${vt?`<table class="mini" style="margin-top:14px"><thead><tr><th>Lượt VLM (s)</th><th>nhãn</th><th>tin cậy</th><th>chờ</th><th>prefill</th><th>suy luận</th><th>tổng</th></tr></thead><tbody>${vt}</tbody></table>`:''}
+    <table class="mini" style="margin-top:14px"><thead><tr><th>Nạp model (s)</th><th>nạp</th><th>warmup</th></tr></thead><tbody>${lt||'<tr><td colspan=3>—</td></tr>'}</tbody></table>
+  </div></div>`}
 
 /* ---- system gauges ---- */
 function gauge(label,pct,main,sub,col){const R=46,C=2*Math.PI*R;return `<div class="g"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="${R}" fill="none" stroke="#243049" stroke-width="9"/><circle cx="60" cy="60" r="${R}" fill="none" stroke="${col}" stroke-width="9" stroke-linecap="round" stroke-dasharray="${C*Math.min(pct,100)/100} ${C}"/></svg><div class="v"><b>${main}</b><small>${sub}</small></div><div class="l">${label}</div></div>`}
@@ -310,7 +429,7 @@ $('#saveSet').onclick=async()=>{
   FIELDS.forEach(k=>{const e=$('#s-'+k);let v=e.type==='checkbox'?e.checked:e.type==='number'?(e.value===''?null:+e.value):e.value;body[k]=v});
   try{SET=await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Đã lưu cài đặt');loadMap()}catch(x){toast('Lỗi: '+x.message)}};
 
-loadMap();poll();sys();setInterval(poll,800);setInterval(sys,3000);
+loadMap();loadRuns();poll();sys();setInterval(poll,800);setInterval(sys,3000);
 </script>
 </body>
 </html>

@@ -5,6 +5,7 @@
 """
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -158,6 +159,48 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         out = state.save_settings(body)
         runner.preload()                      # cấu hình model đổi -> nạp lại ở nền (bỏ qua nếu không đổi / đang chạy)
         return out
+
+    # ---------- lịch sử các lần phân tích (runs/<id>/) ----------
+    def run_dir(rid: str) -> Path:
+        d = state.root / 'runs' / Path(rid).name
+        if not (d / 'run.json').is_file():
+            raise HTTPException(404, 'Không có lần chạy này')
+        return d
+
+    @app.get('/api/runs')
+    def runs():
+        out = []
+        for f in sorted((state.root / 'runs').glob('*/run.json'), reverse=True):
+            try:
+                r = json.loads(f.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            perf = r.get('performance') or {}
+            out.append(dict(id=r['id'], created=r.get('created'), video=r['video'].get('name'), path=r['video'].get('path'),
+                            mode=r.get('mode'), fps=perf.get('pipeline_fps'), n_alerts=(r.get('summary') or {}).get('n_alerts')))
+        return out
+
+    @app.get('/api/runs/{rid}')
+    def run_info(rid: str):
+        return FileResponse(run_dir(rid) / 'run.json', media_type='application/json', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/runs/{rid}/timeline')
+    def run_timeline(rid: str):
+        return FileResponse(run_dir(rid) / 'timeline.json', media_type='application/json')
+
+    @app.get('/api/runs/{rid}/map')
+    def run_map(rid: str):
+        p = run_dir(rid) / 'map.png'
+        if not p.is_file():
+            raise HTTPException(404)
+        return FileResponse(p)
+
+    @app.get('/api/runs/{rid}/video')
+    def run_video(rid: str):          # video gốc của lần chạy (FileResponse hỗ trợ Range -> tua được)
+        p = Path(json.loads((run_dir(rid) / 'run.json').read_text(encoding='utf-8'))['video']['path'])
+        if not p.is_file():
+            raise HTTPException(404, 'File video gốc không còn')
+        return FileResponse(p)
 
     # ---------- map ----------
     @app.get('/api/map-image')
