@@ -33,3 +33,6 @@ pretrained
 .env.*
 !.env.example
 .ipynb_checkpoints/
+
+# Makefile (Vast.ai): trạng thái cài đặt, log, dữ liệu dashboard
+.make/
