@@ -45,9 +45,18 @@ def _driver_cuda_version():
     try:
         out = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=30).stdout
         m = re.search(r'CUDA Version:\s*(\d+)\.(\d+)', out)
-        return (int(m.group(1)), int(m.group(2))) if m else None
+        if m:
+            return int(m.group(1)), int(m.group(2))
     except Exception:
-        return None
+        pass
+    try:                                    # container không có nvidia-smi dùng được: hỏi thẳng libcuda của driver
+        import ctypes
+        v = ctypes.c_int(0)
+        if ctypes.CDLL('libcuda.so.1').cuDriverGetVersion(ctypes.byref(v)) == 0 and v.value:
+            return v.value // 1000, (v.value % 1000) // 10
+    except Exception:
+        pass
+    return None
 
 
 def _download(url, dest):
