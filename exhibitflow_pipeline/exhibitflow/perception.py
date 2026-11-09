@@ -132,7 +132,6 @@ def _ensure_reid_weights(folder: Path) -> Path:
     return weights
 
 
-@register('tracker', 'bytetrack_dma_ltc')
 def _single_thread_gbm(tracker):
     """LightGBM (DMA) predict mặc định dùng OpenMP trên mọi core mỗi lần gọi. Batch chỉ vài chục dòng nên song song hoá
     vô ích, còn khi nhiều thread stage cùng tranh 4 vCPU (Kaggle) thì OpenMP quá tải thread: đo 0.07 ms -> ~110 ms / lần.
@@ -148,6 +147,7 @@ def _single_thread_gbm(tracker):
     booster.predict, booster._ef_single_thread = predict, True
 
 
+@register('tracker', 'bytetrack_dma_ltc')
 class ByteTrackDMALTC:
     """Tham số mặc định = `make track-video-full-torch` (tools/track_video_bench.py)."""
 
