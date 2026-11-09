@@ -180,6 +180,12 @@ class VideoRun:
             self.board.add(dict(tid=task['tid'], behavior=behavior, conf=conf, segment=task['segment'],
                                 shown_from=max(self.last_frame, 0), t_alarm=rec['t_done'],
                                 artifact_ids=g['artifact_ids'] if g else []))
+            hook = self.rt.get('alert_hook')
+            if hook is not None:
+                try:
+                    hook(self, task, rec, behavior, conf)
+                except Exception:
+                    pass
 
 
 def _stage_fns(ctx):
@@ -235,7 +241,7 @@ def _stage_fns(ctx):
         ctx.sink_times.append(t)
         ctx.frame_log.append(dict(frame=p.idx, t_cap=p.t_cap, t_out=t, e2e_ms=(t - p.t_cap) * 1e3,
                                   n_people=len(p.tracks or []), n_pose=p.n_pose, n_contact=sum(s['state'] == 'CONTACT_LIKE' for s in p.states or [])))
-        if ctx.rt['render_live']:
+        if ctx.rt['render_live'] or ctx.rt.get('frame_hook'):
             render_live(ctx, p, (t - p.t_cap) * 1e3)
         p.work = None
         return []     # stage cuối: không chuyển tiếp
@@ -311,6 +317,14 @@ def render_live(ctx, p, e2e_ms):
              f'VLM queue {ctx.vlm.pending()} | alarms {len(ctx.board.alarms)}']
     for k, text in enumerate(lines):
         put_label(vis, text, (8, 22 + 22 * k), (0, 0, 0), 0.55, fg=(0, 255, 255))
+    hook = ctx.rt.get('frame_hook')           # dashboard: nhận frame đã vẽ + tracks (không ảnh hưởng pipeline nếu lỗi)
+    if hook is not None:
+        try:
+            hook(ctx, p, vis, dict(fps=live_fps, e2e_ms=e2e_ms))
+        except Exception:
+            pass
+    if not ctx.rt['render_live']:
+        return
     if ctx.writer is None:
         ctx.live_tmp = ctx.dir / 'live_raw.mp4'
         ctx.live_size = (vis.shape[1] // 2 * 2, vis.shape[0] // 2 * 2)

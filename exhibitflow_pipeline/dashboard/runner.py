@@ -1,0 +1,357 @@
+"""Cầu nối giữa dashboard và pipeline ExhibitFlow.
+
+- `State`: trạng thái dùng chung (frame mới nhất, track, alert, bộ đếm) cho server đọc.
+- `PipelineRunner`: chạy `run_pipeline` trong 1 thread, gắn `frame_hook` / `alert_hook` vào engine.
+- `DemoRunner`: nguồn giả (không cần GPU / trọng số) để xem thử giao diện.
+"""
+import json
+import math
+import os
+import threading
+import time
+import traceback
+from collections import deque
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+SEVERITY = {'stealing': 'high', 'holding': 'medium', 'touching': 'low'}
+
+DEFAULT_SETTINGS = dict(
+    # --- model ---
+    vlm_backend='llama.cpp',          # 'llama.cpp' | 'dry_run' (không gọi VLM, chỉ thử luồng)
+    vlm_n_images=8, vlm_max_side=512, vlm_max_new_tokens=64, vlm_short_json=True,
+    vlm_min_conf=None,
+    # --- pipeline ---
+    pose_gate_norm_dist=1.5, queue_size=8, max_frames=0, alarm_show_sec=4.0,
+    weights_dir='', work_dir='work', use_cpu=False,
+    # --- map 2D: 4 điểm ảnh video (0-1) -> 4 điểm trên map (0-1) ---
+    map_image='default',              # 'default' | 'none' | tên file đã upload
+    homography=dict(src=[[0, 0], [1, 0], [1, 1], [0, 1]], dst=[[0, 0], [1, 0], [1, 1], [0, 1]]),
+)
+
+
+def overrides_from_settings(s):
+    vlm = dict(n_images=int(s['vlm_n_images']), max_side=int(s['vlm_max_side']),
+               max_new_tokens=int(s['vlm_max_new_tokens']), short_json=bool(s['vlm_short_json']))
+    ov = dict(models=dict(vlm=vlm),
+              rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
+                      alarm_show_sec=float(s['alarm_show_sec'])))
+    if s.get('vlm_min_conf') not in (None, ''):
+        ov['vlm_min_conf'] = float(s['vlm_min_conf'])
+    if s.get('weights_dir'):
+        ov['WEIGHT_ROOTS'] = [x.strip() for x in str(s['weights_dir']).split(',') if x.strip()]
+    return ov
+
+
+def homography(h):
+    src = np.array(h['src'], np.float32)
+    dst = np.array(h['dst'], np.float32)
+    return cv2.getPerspectiveTransform(src, dst)
+
+
+class State:
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / 'snapshots').mkdir(exist_ok=True)
+        (self.root / 'uploads').mkdir(exist_ok=True)
+        self.lock = threading.Lock()
+        self.settings_path = self.root / 'settings.json'
+        self.settings = dict(DEFAULT_SETTINGS)
+        if os.environ.get('EF_WEIGHTS_DIR'):
+            self.settings['weights_dir'] = os.environ['EF_WEIGHTS_DIR']
+        if self.settings_path.exists():
+            try:
+                self.settings.update(json.loads(self.settings_path.read_text(encoding='utf-8')))
+            except Exception:
+                pass
+        self.reset()
+
+    def save_settings(self, new):
+        with self.lock:
+            for k, v in new.items():
+                if k in DEFAULT_SETTINGS:
+                    self.settings[k] = v
+            self.settings_path.write_text(json.dumps(self.settings, indent=2), encoding='utf-8')
+        return self.settings
+
+    def reset(self):
+        with self.lock:
+            self.status = 'idle'            # idle | loading | running | finishing | done | error
+            self.phase = ''
+            self.message = ''
+            self.source = None
+            self.frame_jpeg = None
+            self.frame_seq = 0
+            self.frame_size = (0, 0)
+            self.people = []                # [{id, x, y, state}] toạ độ trên map (0-1)
+            self.artifacts = []             # [{id, x, y}]
+            self.alerts = []
+            self.detections_total = 0
+            self.frame_idx = 0
+            self.n_frames = 0
+            self.fps = 0.0
+            self.e2e_ms = 0.0
+            self.started_at = None
+            self.cam_name = 'CAM 1'
+            self.logs = deque(maxlen=200)
+            self.last_bgr = None
+            self.last_tracks = []
+            self._t_jpeg = 0.0
+
+    def log(self, msg):
+        with self.lock:
+            self.logs.append(f"{time.strftime('%H:%M:%S')}  {msg}")
+
+    def set_frame(self, bgr, tracks, size, idx, n, fps, e2e):
+        now = time.time()
+        with self.lock:
+            self.frame_idx, self.n_frames, self.fps, self.e2e_ms = idx, n, fps, e2e
+            self.last_bgr, self.last_tracks = bgr, tracks
+        if now - self._t_jpeg < 0.04:
+            return
+        ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            with self.lock:
+                self.frame_jpeg = buf.tobytes()
+                self.frame_seq += 1
+                self.frame_size = size
+                self._t_jpeg = now
+
+    def add_alert(self, a):
+        with self.lock:
+            a['id'] = len(self.alerts) + 1
+            self.alerts.append(a)
+
+    def snapshot(self):
+        with self.lock:
+            sev = {'high': 0, 'medium': 0, 'low': 0}
+            for a in self.alerts:
+                sev[a['severity']] += 1
+            return dict(status=self.status, phase=self.phase, message=self.message, source=self.source,
+                        cam=self.cam_name, frame=self.frame_idx, n_frames=self.n_frames, fps=round(self.fps, 1),
+                        e2e_ms=round(self.e2e_ms), people=self.people, artifacts=self.artifacts,
+                        alerts=list(reversed(self.alerts))[:200], n_alerts=len(self.alerts), severity=sev,
+                        detections=self.detections_total, logs=list(self.logs)[-40:],
+                        elapsed=round(time.time() - self.started_at) if self.started_at else 0)
+
+
+# ------------------------------------------------------------------ pipeline thật
+class PipelineRunner:
+    def __init__(self, state: State):
+        self.state, self.thread, self.ctx, self.cancel = state, None, None, threading.Event()
+
+    def running(self):
+        return self.thread is not None and self.thread.is_alive()
+
+    def start(self, video_path):
+        if self.running():
+            raise RuntimeError('Pipeline đang chạy')
+        self.state.reset()
+        self.cancel.clear()
+        self.state.source = Path(video_path).name
+        self.state.status, self.state.phase, self.state.started_at = 'loading', 'Nạp model', time.time()
+        self.thread = threading.Thread(target=self._run, args=(str(video_path),), daemon=True, name='pipeline')
+        self.thread.start()
+
+    def stop(self):
+        self.cancel.set()
+        ctx = self.ctx
+        if ctx is not None:
+            ctx.stop.set()
+        self.state.log('Yêu cầu dừng...')
+
+    # ---- hook trong engine ----
+    def _frame_hook(self, ctx, p, vis, perf):
+        st = self.state
+        self.ctx = ctx
+        if self.cancel.is_set():
+            ctx.stop.set()
+        if st.status != 'running':
+            st.status, st.phase = 'running', 'Đang phân tích'
+            st.cam_name = ctx.key
+            st.log(f'Bắt đầu video {ctx.key}: {ctx.n} frame @ {ctx.fps:.1f}fps')
+        H = homography(st.settings['homography'])
+        W, Hh = vis.shape[1], vis.shape[0]
+        people = []
+        pts = []
+        for r in p.tracks or []:
+            x1, y1, x2, y2 = r['box']
+            pts.append([[((x1 + x2) / 2) / W, y2 / Hh]])
+        if pts:
+            proj = cv2.perspectiveTransform(np.array(pts, np.float32), H)
+            contact = {s['track_id'] for s in (p.states or []) if s['state'] == 'CONTACT_LIKE'}
+            alarms = ctx.board.active(p.idx, int(ctx.rt['alarm_show_sec'] * ctx.fps))
+            for r, q in zip(p.tracks, proj):
+                tid = r['id']
+                state = 'alert' if tid in alarms else 'contact' if tid in contact else 'idle'
+                people.append(dict(id=int(tid), x=float(q[0][0]), y=float(q[0][1]), state=state))
+        if not st.artifacts and ctx.scenes:
+            arts = []
+            for aid, mk in ctx.scenes[0]['masks'].items():
+                ys, xs = np.nonzero(mk)
+                if len(xs):
+                    q = cv2.perspectiveTransform(np.array([[[xs.mean() / W, ys.max() / Hh]]], np.float32), H)[0][0]
+                    arts.append(dict(id=int(aid), x=float(q[0]), y=float(q[1])))
+            st.artifacts = arts
+        st.people = people
+        st.detections_total += len(p.tracks or [])
+        st.set_frame(vis, [dict(id=r['id'], box=list(map(float, r['box']))) for r in p.tracks or []],
+                     (W, Hh), p.idx, ctx.n, perf['fps'], perf['e2e_ms'])
+
+    def _alert_hook(self, ctx, task, rec, behavior, conf):
+        st = self.state
+        behavior = str(behavior or 'touching').lower()
+        tid = int(task['tid'])
+        art_ids = [int(a) for a in (task.get('artifact_ids') or [])]
+        with st.lock:
+            bgr, tracks = (st.last_bgr.copy() if st.last_bgr is not None else None), list(st.last_tracks)
+        person_jpg = art_jpg = None
+        if bgr is not None:
+            h, w = bgr.shape[:2]
+            tr = next((t for t in tracks if t['id'] == tid), None)
+            if tr:
+                x1, y1, x2, y2 = [int(v) for v in tr['box']]
+                person_jpg = self._crop(bgr, x1, y1, x2, y2)
+            for aid in art_ids[:1]:
+                mk = None
+                for sc in ctx.scenes:
+                    mk = sc['masks'].get(aid)
+                    if mk is not None:
+                        break
+                if mk is not None and mk.any():
+                    ys, xs = np.nonzero(mk)
+                    art_jpg = self._crop(bgr, int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+        aid_ = len(st.alerts) + 1
+        files = {}
+        for name, jpg in (('person', person_jpg), ('artifact', art_jpg)):
+            if jpg is not None:
+                fn = f'alert{aid_:04d}_{name}.jpg'
+                (st.root / 'snapshots' / fn).write_bytes(jpg)
+                files[name] = f'/snapshots/{fn}'
+        parsed = rec.get('parsed') or {}
+        st.add_alert(dict(time=time.strftime('%H:%M:%S'), video_time=round(st.frame_idx / max(ctx.fps, 1), 1),
+                          camera=ctx.key, track_id=tid, artifact_ids=art_ids, behavior=behavior,
+                          confidence=round(float(conf or 0), 2), severity=SEVERITY.get(behavior, 'low'),
+                          evidence=parsed.get('evidence') or '', person_img=files.get('person'),
+                          artifact_img=files.get('artifact')))
+        st.log(f'ALERT {behavior.upper()} — người ID {tid}, hiện vật {art_ids} ({conf})')
+
+    @staticmethod
+    def _crop(img, x1, y1, x2, y2, pad=0.12):
+        h, w = img.shape[:2]
+        pw, ph = int((x2 - x1) * pad) + 4, int((y2 - y1) * pad) + 4
+        x1, y1, x2, y2 = max(0, x1 - pw), max(0, y1 - ph), min(w, x2 + pw), min(h, y2 + ph)
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return None
+        c = img[y1:y2, x1:x2]
+        s = 160 / max(c.shape[:2])
+        if s < 1:
+            c = cv2.resize(c, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', c, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes() if ok else None
+
+    def _run(self, video):
+        st = self.state
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from exhibitflow import settings as efs
+            from exhibitflow.pipeline import run_pipeline
+            s = st.settings
+            if s.get('use_cpu'):
+                import os
+                os.environ['CUDA_VISIBLE_DEVICES'] = ''
+            efs.RT['frame_hook'] = self._frame_hook
+            efs.RT['alert_hook'] = self._alert_hook
+            st.log('Nạp model (lần đầu có thể tải trọng số, mất vài phút)...')
+            out = st.root / 'results'
+            run_pipeline([video], out_dir=str(out), work_dir=str(Path(s.get('work_dir') or 'work').resolve()),
+                         overrides=overrides_from_settings(s), max_frames=int(s.get('max_frames') or 0) or None,
+                         dry_run_vlm=(s.get('vlm_backend') == 'dry_run'))
+            with st.lock:
+                st.status, st.phase = 'done', 'Hoàn tất'
+            st.log(f'Xong. Kết quả: {out}')
+        except BaseException as e:   # noqa: BLE001
+            tb = traceback.format_exc()
+            with st.lock:
+                st.status, st.message = 'error', f'{type(e).__name__}: {e}'
+            st.log('LỖI: ' + tb[-600:])
+        finally:
+            try:
+                from exhibitflow import settings as efs
+                efs.RT.pop('frame_hook', None)
+                efs.RT.pop('alert_hook', None)
+            except Exception:
+                pass
+
+
+# ------------------------------------------------------------------ demo (không cần GPU)
+class DemoRunner(PipelineRunner):
+    """Sinh frame giả: vài người đi quanh 3 hiện vật; thỉnh thoảng có alert. Chỉ để xem giao diện."""
+
+    def start(self, video_path):
+        if self.running():
+            raise RuntimeError('Pipeline đang chạy')
+        self.state.reset()
+        self.cancel.clear()
+        self.state.source = Path(video_path).name if video_path else 'demo.mp4'
+        self.state.status, self.state.phase, self.state.started_at = 'running', 'Demo (dữ liệu giả)', time.time()
+        self.thread = threading.Thread(target=self._demo, daemon=True, name='demo')
+        self.thread.start()
+
+    def _demo(self):
+        st = self.state
+        W, H, n, fps = 960, 540, 900, 25.0
+        arts = [(0.25, 0.55, 'Tượng đồng'), (0.55, 0.50, 'Bình gốm'), (0.8, 0.6, 'Tranh sơn dầu')]
+        rng = np.random.default_rng(0)
+        people = [dict(id=i + 1, ph=rng.uniform(0, 6.28), sp=rng.uniform(0.01, 0.025), cx=rng.uniform(.25, .75),
+                       rx=rng.uniform(.15, .3)) for i in range(3)]
+        st.cam_name = 'CAM 1'
+        st.artifacts = [dict(id=i + 1, x=a[0], y=a[1]) for i, a in enumerate(arts)]
+        st.log('Chế độ DEMO: dữ liệu giả lập, chưa chạy model thật')
+        fake_ctx_fps = fps
+        for idx in range(n):
+            if self.cancel.is_set():
+                break
+            t0 = time.time()
+            img = np.full((H, W, 3), (46, 40, 36), np.uint8)
+            cv2.rectangle(img, (0, int(H * .62)), (W, H), (66, 58, 52), -1)
+            for x, y, nm in arts:
+                cv2.rectangle(img, (int(x * W) - 40, int(y * H) - 70), (int(x * W) + 40, int(y * H) + 10), (90, 130, 200), -1)
+                cv2.putText(img, nm, (int(x * W) - 45, int(y * H) + 30), cv2.FONT_HERSHEY_SIMPLEX, .45, (200, 200, 200), 1)
+            ppl, tr = [], []
+            for p in people:
+                p['ph'] += p['sp']
+                px = p['cx'] + p['rx'] * math.sin(p['ph'])
+                py = 0.72 + 0.1 * math.sin(p['ph'] * 1.7 + p['id'])
+                bw, bh = 60, 170
+                x1, y1 = int(px * W - bw / 2), int(py * H - bh)
+                near = any(abs(px - a[0]) < .08 and abs(py - a[1] - .15) < .12 for a in arts)
+                col = (0, 0, 255) if near and idx % 300 > 200 else (0, 255, 255) if near else (0, 200, 0)
+                cv2.rectangle(img, (x1, y1), (x1 + bw, y1 + bh), col, 2)
+                cv2.putText(img, f"ID {p['id']}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, .5, col, 1)
+                ppl.append(dict(id=p['id'], x=px, y=py, state='alert' if col == (0, 0, 255) else 'contact' if near else 'idle'))
+                tr.append(dict(id=p['id'], box=[x1, y1, x1 + bw, y1 + bh]))
+            st.people = ppl
+            st.detections_total += len(tr)
+            st.set_frame(img, tr, (W, H), idx, n, 25.0, 40.0)
+            if idx and idx % 300 == 250:
+                beh = ['touching', 'holding', 'stealing'][(idx // 300) % 3]
+                p = people[(idx // 300) % 3]
+                x1 = int((p['cx'] + p['rx'] * math.sin(p['ph'])) * W) - 30
+                crop = self._crop(img, x1, 120, x1 + 60, 400)
+                fn = f'demo{len(st.alerts) + 1}.jpg'
+                if crop:
+                    (st.root / 'snapshots' / fn).write_bytes(crop)
+                a = (idx // 300) % 3
+                st.add_alert(dict(time=time.strftime('%H:%M:%S'), video_time=round(idx / fps, 1), camera='CAM 1',
+                                  track_id=p['id'], artifact_ids=[a + 1], behavior=beh, confidence=0.8,
+                                  severity=SEVERITY[beh], evidence='(demo) người đưa tay vào hiện vật',
+                                  person_img=f'/snapshots/{fn}' if crop else None, artifact_img=None))
+                st.log(f"ALERT {beh.upper()} — người ID {p['id']}, hiện vật {a + 1} (demo)")
+            time.sleep(max(0, 1 / fake_ctx_fps - (time.time() - t0)))
+        with st.lock:
+            st.status, st.phase = 'done', 'Hoàn tất (demo)'

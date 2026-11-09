@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExhibitFlow Dashboard</title>
+<style>
+:root{--bg:#0d1424;--side:#0a101d;--card:#141c2e;--card2:#1a2438;--line:#243049;--tx:#e6ebf5;--mut:#8b97b0;
+--green:#22c55e;--blue:#2f6fe4;--red:#ef4444;--amber:#f5b82e;--orange:#f08a24}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;display:flex}
+button,input,select{font:inherit;color:inherit}
+/* sidebar */
+aside{width:220px;background:var(--side);border-right:1px solid var(--line);padding:18px 12px;display:flex;flex-direction:column;flex-shrink:0}
+.brand{text-align:center;padding:6px 0 18px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.brand .logo{width:54px;height:54px;margin:0 auto 6px;border-radius:14px;background:linear-gradient(135deg,#22c55e,#16a34a);display:grid;place-items:center;font-weight:800;font-size:24px;color:#06210f}
+.brand b{display:block;font-size:16px}.brand small{color:var(--mut)}
+nav a{display:flex;gap:10px;align-items:center;padding:11px 14px;border-radius:9px;color:var(--tx);cursor:pointer;margin-bottom:4px;user-select:none}
+nav a:hover{background:var(--card)}nav a.on{background:var(--blue);font-weight:600}
+nav svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8}
+.side-foot{margin-top:auto;color:var(--mut);font-size:12px;text-align:center}
+/* main */
+main{flex:1;min-width:0;display:flex;flex-direction:column;height:100vh;overflow:auto}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5;flex-wrap:wrap}
+header h1{font-size:20px;margin:0;letter-spacing:.5px;flex:1;min-width:200px}
+.pill{padding:7px 12px;border-radius:8px;background:var(--card);border:1px solid var(--line);font-size:13px;display:flex;gap:7px;align-items:center}
+.pill.ok{color:var(--green);background:#12301f;border-color:#1c4a30}.pill.warn{color:var(--amber);background:#33290f;border-color:#4a3b14}.pill.bad{color:var(--red);background:#331616;border-color:#4a1d1d}
+.btn{background:var(--card2);border:1px solid var(--line);padding:8px 14px;border-radius:8px;cursor:pointer}
+.a.btn,a.btn{color:var(--tx)}.btn:hover{border-color:#3a4a6c}.btn.pri{background:var(--blue);border-color:var(--blue);font-weight:600}.btn.dng{background:#5b1d1d;border-color:#7a2a2a}.btn:disabled{opacity:.5;cursor:not-allowed}
+.page{padding:18px 22px 30px;display:none;flex-direction:column;gap:16px}.page.on{display:flex}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.card h2 .sp{flex:1}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.kpi small{color:var(--mut);text-transform:uppercase;font-size:12px;letter-spacing:.5px;display:flex;justify-content:space-between}
+.kpi b{font-size:32px;display:block;margin-top:4px}
+.dot{width:12px;height:12px;border-radius:3px;background:var(--red);display:inline-block}
+/* video + map */
+.vm{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px}
+.vwrap{position:relative;background:#05080f;border-radius:9px;overflow:hidden;aspect-ratio:16/9;display:grid;place-items:center}
+.vwrap img{width:100%;height:100%;object-fit:contain;display:block}
+.vwrap .ph{color:var(--mut);text-align:center;padding:20px}
+.badge{position:absolute;top:10px;padding:5px 10px;border-radius:6px;font-weight:700;font-size:13px}
+.badge.live{left:10px;background:var(--red);display:none}.badge.time{left:84px;background:var(--orange);color:#1a0d00;display:none}
+.vwrap.run .badge{display:block}
+.srcbar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.srcbar input[type=text]{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.prog{height:4px;background:var(--line);border-radius:3px;margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--green);transition:width .3s}
+.mapbox{position:relative;border-radius:9px;overflow:hidden;background:#0b1220;aspect-ratio:1/1}
+.mapbox canvas{width:100%;height:100%;display:block}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--mut);margin-top:8px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+/* alerts */
+.alerts{width:100%;border-collapse:collapse}
+.alerts th{color:var(--mut);font-weight:500;text-align:left;font-size:12px;text-transform:uppercase;padding:6px 10px;border-bottom:1px solid var(--line)}
+.alerts td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.alerts tr:hover td{background:#18223a}
+.sev{padding:3px 9px;border-radius:5px;font-size:12px;font-weight:600}
+.sev.high{background:#4a1d1d;color:#ff7b7b}.sev.medium{background:#4a3b14;color:#ffd166}.sev.low{background:#14391f;color:#5fe08a}
+.thumb{width:54px;height:54px;border-radius:7px;background:#05080f;object-fit:cover;border:1px solid var(--line)}
+.who{display:flex;gap:10px;align-items:center}.who small{color:var(--mut);display:block}
+.empty{color:var(--mut);padding:26px;text-align:center}
+.scroll{max-height:340px;overflow:auto}
+/* status gauges */
+.gauges{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.g{text-align:center}.g svg{width:120px;height:120px;transform:rotate(-90deg)}
+.g .v{position:relative;margin-top:-84px;height:60px}.g .v b{font-size:20px;display:block}.g .v small{color:var(--mut)}
+.g .l{margin-top:30px}
+.bottom{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px}
+pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:150px;overflow:auto;font-size:12px;color:#aab6cf;white-space:pre-wrap}
+/* settings */
+.sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.f{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}.f label{color:var(--mut);font-size:12px}.f small{color:var(--mut);font-size:11px}
+.f input[type=text],.f input[type=number],.f select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+.f.chk{flex-direction:row;align-items:center;gap:8px}
+.cal{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cal canvas{width:100%;background:#05080f;border-radius:8px;cursor:crosshair;display:block}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--card2);border:1px solid var(--line);padding:10px 16px;border-radius:9px;opacity:0;transition:.25s;pointer-events:none;z-index:20}
+.toast.on{opacity:1}
+@media(max-width:1100px){.vm,.bottom{grid-template-columns:1fr}.kpis,.gauges{grid-template-columns:repeat(2,1fr)}aside{width:64px}.brand small,.brand b,nav a span,.side-foot{display:none}.cal{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand"><div class="logo">EF</div><b>ExhibitFlow</b><small>Museum AI · v1.0</small></div>
+  <nav>
+    <a class="on" data-page="dash"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Dashboard</span></a>
+    <a data-page="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></a>
+  </nav>
+  <div class="side-foot">ExhibitFlow Pipeline</div>
+</aside>
+
+<main>
+<header>
+  <h1 id="title">EXHIBITFLOW DASHBOARD</h1>
+  <div class="pill" id="sysPill">● Idle</div>
+  <div class="pill" id="clock">--</div>
+  <button class="btn" id="refresh">Refresh Data</button>
+</header>
+
+<!-- ============ DASHBOARD ============ -->
+<section class="page on" id="p-dash">
+  <div class="kpis">
+    <div class="card kpi"><small>Video nguồn</small><b id="k-src" style="font-size:20px;margin-top:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</b></div>
+    <div class="card kpi"><small>Tiến độ</small><b id="k-prog">0%</b></div>
+    <div class="card kpi"><small>Alerts <span class="dot"></span></small><b id="k-alerts">0</b></div>
+    <div class="card kpi"><small>Total detections</small><b id="k-det">0</b></div>
+  </div>
+
+  <div class="vm">
+    <div class="card">
+      <h2><span id="vtitle">Video phân tích</span><span class="sp"></span><span id="vstat" style="color:var(--mut);text-transform:none;letter-spacing:0;font-weight:400">Chưa chạy</span></h2>
+      <div class="srcbar">
+        <input type="text" id="srcText" placeholder="Đường dẫn file / thư mục / URL video (.mp4 ...)">
+        <input type="file" id="srcFile" accept="video/*" hidden>
+        <button class="btn" id="btnUpload">⬆ Upload</button>
+        <button class="btn pri" id="btnStart">▶ Phân tích</button>
+        <button class="btn dng" id="btnStop" disabled>■ Dừng</button>
+      </div>
+      <div class="vwrap" id="vwrap">
+        <img id="vimg" alt="" style="display:none">
+        <div class="ph" id="vph">Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.<br><small>Lần đầu nạp model có thể mất vài phút.</small></div>
+        <span class="badge live">● LIVE</span><span class="badge time" id="vtime">00:00</span>
+      </div>
+      <div class="prog"><i id="progbar"></i></div>
+      <div class="legend" style="margin-top:8px"><span id="vmeta"></span></div>
+    </div>
+
+    <div class="card">
+      <h2>Map 2D <span class="sp"></span><small style="color:var(--mut);text-transform:none;letter-spacing:0;font-weight:400" id="mapmeta"></small></h2>
+      <div class="mapbox"><canvas id="map" width="700" height="700"></canvas></div>
+      <div class="legend"><span><i style="background:var(--green)"></i>Người</span><span><i style="background:var(--amber)"></i>Đang chạm</span><span><i style="background:var(--red)"></i>Cảnh báo</span><span><i style="background:#4aa3ff;border-radius:2px"></i>Hiện vật</span></div>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div class="card">
+      <h2>Alerts log <span class="sp"></span><a class="btn" href="/api/alerts.csv" style="text-decoration:none;font-size:12px;padding:4px 10px;text-transform:none">Xuất CSV</a></h2>
+      <div class="scroll">
+        <table class="alerts"><thead><tr><th>#</th><th>Thời điểm</th><th>Người alert</th><th>Vật bị tác động</th><th>Hành vi</th><th>Mức</th><th>Tin cậy</th><th>Ghi chú VLM</th></tr></thead><tbody id="alertRows"></tbody></table>
+        <div class="empty" id="alertEmpty">Chưa có cảnh báo.</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>System status</h2>
+      <div class="gauges" style="grid-template-columns:repeat(2,1fr)" id="gauges"></div>
+    </div>
+  </div>
+  <div class="card"><h2>Nhật ký pipeline</h2><pre class="log" id="log"></pre></div>
+</section>
+
+<!-- ============ SETTINGS ============ -->
+<section class="page" id="p-settings">
+  <div class="sgrid">
+    <div class="card"><h2>Model · VLM (Qwen3-VL)</h2>
+      <div class="f"><label>Backend VLM</label><select id="s-vlm_backend"><option value="llama.cpp">llama.cpp (Qwen3-VL-8B Q4_K_M)</option><option value="dry_run">dry_run (không gọi VLM, chỉ thử luồng)</option></select></div>
+      <div class="f"><label>Số ảnh gửi VLM</label><input type="number" id="s-vlm_n_images" min="1" max="12"><small>8 = nhanh (F1 0.69) · 12 = chính xác hơn, chậm ~3x</small></div>
+      <div class="f"><label>Cạnh dài tối đa ảnh (px)</label><input type="number" id="s-vlm_max_side" step="64"></div>
+      <div class="f"><label>max_new_tokens</label><input type="number" id="s-vlm_max_new_tokens"></div>
+      <div class="f chk"><input type="checkbox" id="s-vlm_short_json"><label>Chỉ trả {"label","confidence"} (short JSON)</label></div>
+      <div class="f"><label>Ngưỡng tin cậy VLM tối thiểu</label><input type="number" id="s-vlm_min_conf" step="0.05" min="0" max="1" placeholder="mặc định"></div>
+    </div>
+    <div class="card"><h2>Pipeline</h2>
+      <div class="f"><label>pose_gate_norm_dist</label><input type="number" id="s-pose_gate_norm_dist" step="0.1"><small>Chỉ chạy pose/hand cho người cách hiện vật ≤ k × chiều cao người (0 = mọi người)</small></div>
+      <div class="f"><label>queue_size</label><input type="number" id="s-queue_size"></div>
+      <div class="f"><label>Giới hạn số frame (0 = cả video)</label><input type="number" id="s-max_frames"></div>
+      <div class="f"><label>Giữ khung đỏ cảnh báo (giây)</label><input type="number" id="s-alarm_show_sec" step="0.5"></div>
+      <div class="f"><label>Thư mục trọng số (cách nhau dấu phẩy)</label><input type="text" id="s-weights_dir" placeholder="/content/weights"></div>
+      <div class="f"><label>Thư mục làm việc</label><input type="text" id="s-work_dir"></div>
+      <div class="f chk"><input type="checkbox" id="s-use_cpu"><label>Chạy CPU (rất chậm)</label></div>
+    </div>
+    <div class="card"><h2>Map 2D</h2>
+      <div class="f"><label>Ảnh nền floorplan</label><select id="s-map_image"><option value="default">Mặc định (multicam-2d-floorplan-tracker)</option><option value="none">Không dùng ảnh (lưới trống)</option></select></div>
+      <div class="f"><label>Upload floorplan khác</label><input type="file" id="mapFile" accept="image/*"></div>
+      <small style="color:var(--mut)">Hiệu chỉnh map: bấm 4 điểm trên khung hình video (ở trái), sau đó 4 điểm tương ứng trên map (ở phải), cùng thứ tự. Chọn điểm trên mặt sàn.</small>
+    </div>
+  </div>
+  <div class="card"><h2>Hiệu chỉnh vị trí video → map <span class="sp"></span>
+      <button class="btn" id="calReset">Chọn lại</button><button class="btn" id="calIdent">Mặc định (toàn khung)</button></h2>
+    <div class="cal"><div><small style="color:var(--mut)" id="calL">① Khung hình video (0/4)</small><canvas id="calV" width="640" height="360"></canvas></div>
+    <div><small style="color:var(--mut)" id="calR">② Map 2D (0/4)</small><canvas id="calM" width="640" height="360"></canvas></div></div>
+  </div>
+  <div><button class="btn pri" id="saveSet">Lưu cài đặt</button> <small style="color:var(--mut)">Áp dụng từ lần phân tích kế tiếp.</small></div>
+</section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600)};
+const api=async(u,o)=>{const r=await fetch(u,o);if(!r.ok){let d='';try{d=(await r.json()).detail}catch{}throw new Error(d||r.statusText)}return r.json()};
+let ST={}, SET={}, mapImg=null;
+
+/* ---- nav ---- */
+$$('nav a').forEach(a=>a.onclick=()=>{$$('nav a').forEach(x=>x.classList.toggle('on',x===a));
+  $$('.page').forEach(p=>p.classList.toggle('on',p.id==='p-'+a.dataset.page));
+  $('#title').textContent=a.dataset.page==='dash'?'EXHIBITFLOW DASHBOARD':'SETTINGS';
+  if(a.dataset.page==='settings')openSettings()});
+setInterval(()=>{$('#clock').textContent=new Date().toLocaleString('vi-VN')},1000);
+
+/* ---- source ---- */
+$('#btnUpload').onclick=()=>$('#srcFile').click();
+$('#srcFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  toast('Đang upload '+f.name+' ...');const fd=new FormData();fd.append('file',f);
+  try{const r=await api('/api/upload',{method:'POST',body:fd});$('#srcText').value=r.path;toast('Đã upload ('+r.size_mb+' MB)')}catch(x){toast('Lỗi: '+x.message)}};
+$('#btnStart').onclick=async()=>{try{await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:$('#srcText').value})});toast('Đã bắt đầu')}catch(x){toast('Lỗi: '+x.message)}};
+$('#btnStop').onclick=()=>api('/api/stop',{method:'POST'}).then(()=>toast('Đang dừng...'));
+$('#refresh').onclick=()=>{poll();sys()};
+
+/* ---- poll ---- */
+const STAT={idle:['Idle',''],loading:['Đang nạp model','warn'],running:['System Online','ok'],finishing:['Đang kết thúc','warn'],done:['Hoàn tất','ok'],error:['Lỗi','bad']};
+const mmss=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0');
+let streaming=false;
+async function poll(){
+  try{ST=await api('/api/state')}catch{$('#sysPill').className='pill bad';$('#sysPill').textContent='● Mất kết nối';return}
+  const [t,c]=STAT[ST.status]||['?',''];
+  $('#sysPill').className='pill '+c;$('#sysPill').textContent='● '+(ST.status==='error'?'Lỗi: '+ST.message:t+(ST.phase&&ST.status!=='running'?' — '+ST.phase:''));
+  const run=['loading','running','finishing'].includes(ST.status);
+  $('#btnStart').disabled=run;$('#btnStop').disabled=!run;
+  $('#k-src').textContent=ST.source||'—';
+  const pct=ST.n_frames?Math.round(100*ST.frame/ST.n_frames):0;
+  $('#k-prog').textContent=pct+'%';$('#progbar').style.width=pct+'%';
+  $('#k-alerts').textContent=ST.n_alerts;$('#k-det').textContent=ST.detections;
+  $('#vtitle').textContent='Video phân tích — '+(ST.cam||'CAM 1');
+  $('#vstat').textContent=ST.status==='running'?'● Online':ST.status==='loading'?'Đang nạp model...':ST.status==='done'?'Hoàn tất':'Chưa chạy';
+  $('#vstat').style.color=ST.status==='running'?'var(--green)':'var(--mut)';
+  $('#vmeta').textContent=ST.n_frames?`frame ${ST.frame}/${ST.n_frames} · ${ST.fps} FPS · e2e ${ST.e2e_ms} ms · ${mmss(ST.elapsed)}`:'';
+  $('#vtime').textContent=mmss(ST.frame/25);
+  $('#vwrap').classList.toggle('run',ST.status==='running');
+  if((run||ST.status==='done')&&ST.n_frames&&!streaming){streaming=true;$('#vimg').src='/api/stream?'+Date.now();$('#vimg').style.display='block';$('#vph').style.display='none'}
+  if(ST.status==='idle'&&streaming){streaming=false}
+  if(ST.status==='loading'){$('#vph').style.display='block';$('#vph').innerHTML='<b>'+ST.phase+'</b><br><small>'+(ST.logs.slice(-1)[0]||'')+'</small>'}
+  renderAlerts();$('#log').textContent=(ST.logs||[]).join('\n');drawMap(ST.people||[],ST.artifacts||[]);
+}
+function renderAlerts(){
+  const tb=$('#alertRows');$('#alertEmpty').style.display=ST.alerts.length?'none':'block';
+  const key=ST.alerts.map(a=>a.id).join();if(tb.dataset.k===key)return;tb.dataset.k=key;
+  const vn={touching:'Chạm',holding:'Cầm',stealing:'Lấy cắp'};
+  tb.innerHTML=ST.alerts.map(a=>`<tr><td>${a.id}</td><td>${a.time}<br><small style="color:var(--mut)">video ${a.video_time}s · ${a.camera}</small></td>
+  <td><div class="who">${a.person_img?`<img class="thumb" src="${a.person_img}">`:'<div class="thumb"></div>'}<div><b>Người ID ${a.track_id}</b></div></div></td>
+  <td><div class="who">${a.artifact_img?`<img class="thumb" src="${a.artifact_img}">`:'<div class="thumb"></div>'}<div><b>Hiện vật ${a.artifact_ids.join(', ')||'—'}</b></div></div></td>
+  <td>${vn[a.behavior]||a.behavior}</td><td><span class="sev ${a.severity}">${a.severity.toUpperCase()}</span></td><td>${a.confidence}</td>
+  <td style="max-width:240px;color:var(--mut);font-size:12px">${a.evidence||''}</td></tr>`).join('');
+}
+
+/* ---- map ---- */
+function loadMap(){mapImg=null;const i=new Image();i.onload=()=>{mapImg=i;drawMap(ST.people||[],ST.artifacts||[])};i.onerror=()=>{mapImg=null};i.src='/api/map-image?'+Date.now()}
+function drawMapOn(cv,people,arts,withDots=true){
+  const c=cv.getContext('2d'),W=cv.width,H=cv.height;c.fillStyle='#0b1220';c.fillRect(0,0,W,H);
+  let ox=0,oy=0,w=W,h=H;
+  if(mapImg){const s=Math.min(W/mapImg.width,H/mapImg.height);w=mapImg.width*s;h=mapImg.height*s;ox=(W-w)/2;oy=(H-h)/2;c.drawImage(mapImg,ox,oy,w,h)}
+  else{c.strokeStyle='#1c2842';c.lineWidth=1;for(let i=0;i<=10;i++){c.beginPath();c.moveTo(i*W/10,0);c.lineTo(i*W/10,H);c.moveTo(0,i*H/10);c.lineTo(W,i*H/10);c.stroke()}}
+  if(!withDots)return {ox,oy,w,h};
+  const P=(x,y)=>[ox+Math.min(Math.max(x,-.05),1.05)*w,oy+Math.min(Math.max(y,-.05),1.05)*h],r=Math.max(6,W/70);
+  arts.forEach(a=>{const [x,y]=P(a.x,a.y);c.fillStyle='#4aa3ff';c.fillRect(x-r*.8,y-r*.8,r*1.6,r*1.6);c.fillStyle='#cfe4ff';c.font=`${r*1.6}px sans-serif`;c.fillText('A'+a.id,x+r,y-r)});
+  people.forEach(p=>{const [x,y]=P(p.x,p.y);const col=p.state==='alert'?'#ef4444':p.state==='contact'?'#f5b82e':'#22c55e';
+    c.beginPath();c.arc(x,y,r,0,7);c.fillStyle=col;c.fill();c.lineWidth=2;c.strokeStyle='#fff';c.stroke();
+    c.fillStyle='#fff';c.font=`bold ${r*1.5}px sans-serif`;c.fillText(p.id,x+r+2,y+r*.5)});
+  return {ox,oy,w,h};
+}
+function drawMap(p,a){drawMapOn($('#map'),p,a);$('#mapmeta').textContent=p.length+' người'}
+
+/* ---- system gauges ---- */
+function gauge(label,pct,main,sub,col){const R=46,C=2*Math.PI*R;return `<div class="g"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="${R}" fill="none" stroke="#243049" stroke-width="9"/><circle cx="60" cy="60" r="${R}" fill="none" stroke="${col}" stroke-width="9" stroke-linecap="round" stroke-dasharray="${C*Math.min(pct,100)/100} ${C}"/></svg><div class="v"><b>${main}</b><small>${sub}</small></div><div class="l">${label}</div></div>`}
+async function sys(){try{const s=await api('/api/system');const g=s.gpu&&s.gpu[0];
+  $('#gauges').innerHTML=gauge('CPU',s.cpu,s.cpu+'%','load '+(s.load??'-'),'#22c55e')+
+   gauge('RAM',100*s.mem_used/s.mem_total,s.mem_used+' GB','/ '+s.mem_total+' GB','#2f6fe4')+
+   (g?gauge('GPU',g.util,g.util+'%',g.name.replace('NVIDIA ','').slice(0,14),'#a855f7')+gauge('VRAM',100*g.mem_used/g.mem_total,g.mem_used+' GB','/ '+g.mem_total+' GB','#f08a24')
+    :gauge('Disk',100*s.disk_used/s.disk_total,Math.round(100*s.disk_used/s.disk_total)+'%',s.disk_used+' / '+s.disk_total+' GB','#f08a24'))}catch{}}
+
+/* ---- settings ---- */
+const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image'];
+let cal={v:[],m:[],H:null,frameImg:null,geo:null};
+async function openSettings(){
+  SET=await api('/api/settings');
+  const mi=$('#s-map_image');[...mi.options].forEach(o=>{if(!['default','none'].includes(o.value))o.remove()});
+  if(!['default','none'].includes(SET.map_image)){const o=new Option('Upload: '+SET.map_image,SET.map_image);mi.add(o)}
+  FIELDS.forEach(k=>{const e=$('#s-'+k);if(e.type==='checkbox')e.checked=!!SET[k];else e.value=SET[k]??''});
+  cal.v=[];cal.m=[];
+  cal.frameImg=null;const im=new Image();im.onload=()=>{cal.frameImg=im;drawCal()};im.onerror=()=>drawCal();im.src='/api/frame?'+Date.now();drawCal();
+}
+function drawCal(){
+  const cv=$('#calV'),c=cv.getContext('2d');c.fillStyle='#05080f';c.fillRect(0,0,cv.width,cv.height);
+  let vg={ox:0,oy:0,w:cv.width,h:cv.height};
+  if(cal.frameImg){const s=Math.min(cv.width/cal.frameImg.width,cv.height/cal.frameImg.height);vg={w:cal.frameImg.width*s,h:cal.frameImg.height*s};vg.ox=(cv.width-vg.w)/2;vg.oy=(cv.height-vg.h)/2;c.drawImage(cal.frameImg,vg.ox,vg.oy,vg.w,vg.h)}
+  else{c.fillStyle='#8b97b0';c.font='14px sans-serif';c.fillText('Chưa có khung hình — chạy video 1 lần rồi quay lại (hoặc dùng "Mặc định")',14,24)}
+  cal.vg=vg;cal.v.forEach((p,i)=>dot(c,vg.ox+p[0]*vg.w,vg.oy+p[1]*vg.h,i+1));
+  const mc=$('#calM');cal.mg=drawMapOn(mc,[],[],false);const c2=mc.getContext('2d');cal.m.forEach((p,i)=>dot(c2,cal.mg.ox+p[0]*cal.mg.w,cal.mg.oy+p[1]*cal.mg.h,i+1));
+  $('#calL').textContent=`① Khung hình video (${cal.v.length}/4)`;$('#calR').textContent=`② Map 2D (${cal.m.length}/4)`;
+}
+function dot(c,x,y,n){c.beginPath();c.arc(x,y,9,0,7);c.fillStyle='#2f6fe4';c.fill();c.strokeStyle='#fff';c.lineWidth=2;c.stroke();c.fillStyle='#fff';c.font='bold 12px sans-serif';c.fillText(n,x-3.5,y+4)}
+function clickPt(cv,g,arr,e){if(arr.length>=4)return;const r=cv.getBoundingClientRect(),x=(e.clientX-r.left)*cv.width/r.width,y=(e.clientY-r.top)*cv.height/r.height;
+  const u=(x-g.ox)/g.w,v=(y-g.oy)/g.h;if(u<0||u>1||v<0||v>1)return;arr.push([+u.toFixed(4),+v.toFixed(4)]);drawCal();
+  if(cal.v.length===4&&cal.m.length===4){SET.homography={src:cal.v,dst:cal.m};toast('Đã chọn đủ 4 cặp điểm — bấm Lưu cài đặt')}}
+$('#calV').onclick=e=>clickPt($('#calV'),cal.vg,cal.v,e);$('#calM').onclick=e=>clickPt($('#calM'),cal.mg,cal.m,e);
+$('#calReset').onclick=()=>{cal.v=[];cal.m=[];drawCal()};
+$('#calIdent').onclick=()=>{SET.homography={src:[[0,0],[1,0],[1,1],[0,1]],dst:[[0,0],[1,0],[1,1],[0,1]]};cal.v=[];cal.m=[];drawCal();toast('Đặt lại mặc định — bấm Lưu cài đặt')};
+$('#mapFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);
+  try{const r=await api('/api/map-image',{method:'POST',body:fd});toast('Đã upload floorplan');await openSettings();$('#s-map_image').value=r.name;loadMap();setTimeout(drawCal,300)}catch(x){toast('Lỗi: '+x.message)}};
+$('#s-map_image').onchange=async()=>{await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({map_image:$('#s-map_image').value})});loadMap();setTimeout(drawCal,300)};
+$('#saveSet').onclick=async()=>{
+  const body={homography:SET.homography};
+  FIELDS.forEach(k=>{const e=$('#s-'+k);let v=e.type==='checkbox'?e.checked:e.type==='number'?(e.value===''?null:+e.value):e.value;body[k]=v});
+  try{SET=await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Đã lưu cài đặt');loadMap()}catch(x){toast('Lỗi: '+x.message)}};
+
+loadMap();poll();sys();setInterval(poll,800);setInterval(sys,3000);
+</script>
+</body>
+</html>
