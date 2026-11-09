@@ -371,10 +371,20 @@ class PipelineRunner:
         rid = time.strftime('%Y%m%d_%H%M%S') + '_' + re.sub(r'[^\w.-]+', '_', Path(video).stem)[:40]
         d = st.root / 'runs' / rid
         d.mkdir(parents=True, exist_ok=True)
-        alerts = [dict(tid=int(e['track_id']), behavior=e.get('behavior'), conf=e.get('vlm_confidence'), artifact_id=e.get('artifact_id'),
-                       hand=e.get('hand'), start=int(e['start_frame']), end=int(e['end_frame']), evidence=e.get('vlm_evidence'),
-                       spans=[[int(a), int(b)] for a, b in (e.get('alarm_spans') or [])])
-                  for e in res.get('events', []) if e.get('decision') == 'ANOMALY']
+        def span(x):                                           # result.json: dict(start_frame, end_frame); engine: (lo, hi)
+            return [int(x['start_frame']), int(x['end_frame'])] if isinstance(x, dict) else [int(x[0]), int(x[1])]
+
+        alerts = []
+        for e in res.get('events', []):
+            if e.get('decision') != 'ANOMALY':
+                continue
+            try:
+                spans = [span(x) for x in (e.get('alarm_spans') or [])]
+            except Exception:
+                spans = []
+            alerts.append(dict(tid=int(e['track_id']), behavior=e.get('behavior'), conf=e.get('vlm_confidence'),
+                               artifact_id=e.get('artifact_id'), hand=e.get('hand'), start=int(e['start_frame']),
+                               end=int(e['end_frame']), evidence=e.get('vlm_evidence'), spans=spans))
         has_map = bool(st.map_path and Path(st.map_path).is_file())
         if has_map:
             shutil.copy(st.map_path, d / 'map.png')
