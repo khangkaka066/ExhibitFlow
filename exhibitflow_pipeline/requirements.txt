@@ -31,3 +31,6 @@ filterpy
 motmetrics
 shapely>=2.0                    # multicam-2d-floorplan-tracker (map 2D tự tạo từ video)
 brotli>=1.2                     # httpx2 (huggingface_hub mới) cần bản này
+lightgbm                        # yolox.DMA (DMA GBM) import lightgbm / xgboost / threadpoolctl khi nạp
+xgboost
+threadpoolctl
