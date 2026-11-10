@@ -133,6 +133,7 @@ class Engine:
         """local: trả VRAM của tracker / pose / hand / VLM sau mỗi video (detector giữ lại)."""
         M = self.M
         if M is not None:
+            getattr(M.tracker, 'close', lambda: None)()          # tracker ở tiến trình riêng: dừng tiến trình, trả VRAM
             M.tracker = None
             M.pose = M.hand = build('hand', dict(backend='none'))
         if self.vlm is not None:

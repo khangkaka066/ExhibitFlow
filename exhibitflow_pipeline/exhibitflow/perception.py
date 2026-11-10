@@ -212,6 +212,117 @@ class ByteTrackDMALTC:
         return _attach_scores(keep, dets)
 
 
+@register('tracker', 'bytetrack_dma_ltc_proc')
+class RemoteTracker:
+    """ByteTrack-DMA-LTC chạy trong TIẾN TRÌNH RIÊNG (exhibitflow/tracker_worker.py). Stage `track` là phần nặng mã Python nhất
+    (ReID + LTC + DMA, nhiều kernel nhỏ phát từ CPU): trong cùng tiến trình nó tranh GIL với 6 stage khác. Tiến trình riêng có GIL
+    riêng nên không bị các stage kia làm chậm (và ngược lại). Giao diện giống ByteTrackDMALTC (reset / update).
+    Đổi lại: thêm 1 CUDA context (~0.5 GB VRAM) và ~2-4 ms chép ảnh qua shared memory mỗi frame."""
+
+    def __init__(self, startup_timeout=300, threads=1, **spec):
+        import atexit
+        import secrets
+        import shutil
+        import subprocess
+        import tempfile
+        import threading
+        from multiprocessing.connection import Listener
+        self._lock, self._shm, self._closed = threading.Lock(), None, False
+        self._dir = tempfile.mkdtemp(prefix='ef_trk_')
+        key = secrets.token_bytes(16)
+        addr = os.path.join(self._dir, 'trk.sock')
+        listener = Listener(addr, family='AF_UNIX', authkey=key)
+        env = dict(os.environ, EF_TRK_KEY=key.hex(),
+                   PYTHONPATH=os.pathsep.join([str(settings.PROJECT_DIR), os.environ.get('PYTHONPATH', '')]))
+        self.proc = subprocess.Popen([sys.executable, '-m', 'exhibitflow.tracker_worker', addr], env=env)
+        box = {}
+        t = threading.Thread(target=lambda: box.update(conn=listener.accept()), daemon=True)
+        t.start()
+        t0 = time.perf_counter()
+        while t.is_alive() and self.proc.poll() is None and time.perf_counter() - t0 < 60:
+            t.join(0.2)
+        listener.close()
+        if 'conn' not in box:
+            self._kill()
+            shutil.rmtree(self._dir, ignore_errors=True)
+            raise RuntimeError(f'Tiến trình tracker không khởi động được (mã {self.proc.poll()})')
+        self.conn = box['conn']
+        atexit.register(self.close)
+        spec = dict(spec, backend='bytetrack_dma_ltc')
+        self._call(('init', dict(spec=spec, weight_roots=[str(p) for p in settings.WEIGHT_ROOTS], work=str(settings.WORK),
+                                 threads=threads)), timeout=startup_timeout)
+        print(f'    Tracker chạy ở tiến trình riêng (pid {self.proc.pid})')
+
+    def _kill(self):
+        try:
+            self.proc.kill()
+            self.proc.wait(5)
+        except Exception:
+            pass
+
+    def _call(self, msg, timeout=120):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Tiến trình tracker đã đóng')
+            self.conn.send(msg)
+            t0 = time.perf_counter()
+            while not self.conn.poll(1.0):
+                if self.proc.poll() is not None:
+                    raise RuntimeError(f'Tiến trình tracker đã chết (mã {self.proc.returncode})')
+                if time.perf_counter() - t0 > timeout:
+                    raise TimeoutError(f'Tiến trình tracker không trả lời sau {timeout}s')
+            status, val = self.conn.recv()
+        if status == 'err':
+            raise RuntimeError('Lỗi trong tiến trình tracker:\n' + val)
+        return val
+
+    def reset(self, fps):
+        self._call(('reset', float(fps)))
+
+    def update(self, dets, frame, native=None, S=1.0):
+        from multiprocessing import shared_memory
+        img, s = (native, S) if native is not None else (frame, 1.0)
+        img = np.ascontiguousarray(img)
+        if self._shm is None or self._shm.size < img.nbytes:      # (cấp lại) vùng nhớ chung khi ảnh lớn hơn
+            old = self._shm
+            self._shm = shared_memory.SharedMemory(create=True, size=img.nbytes)
+            self._call(('shm', self._shm.name))
+            if old is not None:
+                old.close()
+                old.unlink()
+        np.ndarray(img.shape, img.dtype, buffer=self._shm.buf)[...] = img
+        return self._call(('upd', img.shape, [list(map(float, d)) for d in dets] if dets else [], float(s), native is not None))
+
+    def close(self):
+        if self._closed:
+            return
+        try:
+            self._call(('quit',), timeout=10)
+        except Exception:
+            pass
+        with self._lock:
+            self._closed = True
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        self._kill()
+        if self._shm is not None:
+            try:
+                self._shm.close()
+                self._shm.unlink()
+            except Exception:
+                pass
+        import shutil
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 class _UltralyticsTracker:
     TYPE = 'bytetrack'
 

@@ -27,6 +27,8 @@ DEFAULT_SETTINGS = dict(
     vlm_min_conf=None,
     # --- pipeline ---
     pose_gate_norm_dist=1.5, queue_size=8, max_frames=0, alarm_show_sec=4.0,
+    limit_cpu_threads=False,            # True: torch / OpenCV chỉ 1 luồng mỗi stage (máy ít nhân như Kaggle 4 vCPU); máy nhiều nhân nên tắt
+    tracker_process=False,              # True: chạy tracker ở tiến trình riêng (thoát GIL; +~0.5 GB VRAM, nạp lại model khi đổi)
     realtime=False, drop_frames=True,   # realtime: đọc video theo nhịp fps gốc; drop_frames: stage đầu bận thì bỏ frame mới (giữ độ trễ thấp)
     weights_dir='', work_dir='work', use_cpu=False,
     pipeline_mode='full',             # 'tracking' | 'tracking_seg' (+ segmentation hiện vật, phát hiện chạm) | 'full' (+ VLM, cảnh báo)
@@ -42,9 +44,11 @@ DEFAULT_SETTINGS = dict(
 def overrides_from_settings(s):
     vlm = dict(n_images=int(s['vlm_n_images']), max_side=int(s['vlm_max_side']),
                max_new_tokens=int(s['vlm_max_new_tokens']), short_json=bool(s['vlm_short_json']))
-    ov = dict(models=dict(vlm=vlm),
+    tracker = dict(backend='bytetrack_dma_ltc_proc' if s.get('tracker_process') else 'bytetrack_dma_ltc')
+    ov = dict(models=dict(vlm=vlm, tracker=tracker),
               rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
                       alarm_show_sec=float(s['alarm_show_sec']), realtime=bool(s.get('realtime')),
+                      limit_cpu_threads=bool(s.get('limit_cpu_threads')),
                       drop_frames=bool(s.get('drop_frames', True))))
     if s.get('vlm_min_conf') not in (None, ''):
         ov['vlm_min_conf'] = float(s['vlm_min_conf'])
@@ -53,7 +57,7 @@ def overrides_from_settings(s):
     return ov
 
 
-MODEL_KEYS = ('vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
+MODEL_KEYS = ('tracker_process', 'vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
               'use_cpu', 'work_dir')
 
 

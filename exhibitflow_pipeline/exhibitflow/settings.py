@@ -84,7 +84,7 @@ RT = dict(
     ring_seconds=20.0,          # ring buffer ảnh gốc để cắt ảnh cho VLM
     store_long=1280,            # cạnh dài ảnh lưu trong ring buffer (giới hạn RAM)
     vlm_early_sec=None,         # vd 2.0: gửi VLM ngay khi chạm liên tục 2s (báo động sớm), không đợi event kết thúc
-    limit_cpu_threads=True,     # mỗi stage là 1 thread Python: torch / OpenCV chỉ dùng 1 thread nội bộ (Kaggle chỉ có 4 vCPU,
+    limit_cpu_threads=False,    # mỗi stage là 1 thread Python: torch / OpenCV chỉ dùng 1 thread nội bộ (Kaggle chỉ có 4 vCPU,
                                 # để mặc định thì 7 stage x 4 thread tranh nhau CPU -> detect / track chậm hẳn)
     render_live=False,           # sink ghi video live (overlay + HUD FPS/latency)
     alarm_show_sec=4.0,         # video live: thời gian giữ khung đỏ sau khi VLM báo
