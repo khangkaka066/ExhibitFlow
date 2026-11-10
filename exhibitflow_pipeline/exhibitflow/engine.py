@@ -340,7 +340,7 @@ def render_live(ctx, p, e2e_ms):
         col = ALARM_COLOR if tid in alarms else CONTACT_COLOR if tid in contact else IDLE_PERSON
         x1, y1, x2, y2 = map(int, rec['box'])
         cv2.rectangle(vis, (x1, y1), (x2, y2), col, 3 if tid in alarms else 2)
-        txt = f'ID {tid}' + (f" | {str(alarms[tid]['behavior']).upper()}" if tid in alarms else ' | contact?' if tid in contact else '')
+        txt = f'ID {tid}' + (f" | {str(alarms[tid]['behavior']).upper()}" if tid in alarms else '')
         put_label(vis, txt, (x1, y1 - 4), (0, 0, 0), 0.5, fg=col)
         if rec.get('kp') is not None:
             for hand in WRIST_IDX:

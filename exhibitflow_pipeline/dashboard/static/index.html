@@ -398,7 +398,7 @@ function drawPB(f){
   if(d){const stt={};
     d[0].forEach(([id,x1,y1,x2,y2,ct])=>{const al=alertAt(id,f),col=al?'#ef4444':ct?'#facc15':'#22c55e';stt[id]=al?'alert':ct?'contact':'idle';if(al)red.add(id);
       c.strokeStyle=col;c.lineWidth=al?3:2;c.strokeRect(ox+x1*w,oy+y1*h,(x2-x1)*w,(y2-y1)*h);
-      const t='ID '+id+(al?' | '+String(al.behavior||'').toUpperCase():ct?' | contact?':'');c.font='bold 12px sans-serif';
+      const t='ID '+id+(al?' | '+String(al.behavior||'').toUpperCase():'');c.font='bold 12px sans-serif';
       c.fillStyle='#000';c.fillRect(ox+x1*w,oy+y1*h-17,c.measureText(t).width+8,16);c.fillStyle=col;c.fillText(t,ox+x1*w+4,oy+y1*h-5)});
     d[1].forEach(([id,x,y])=>people.push({id,x,y,state:stt[id]||'idle'}))}
   drawMap(people,PB.tl.artifacts||[]);
