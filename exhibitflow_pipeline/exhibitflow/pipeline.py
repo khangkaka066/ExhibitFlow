@@ -89,10 +89,12 @@ def _performance(ctx, vlm_records):
         stages[st] = dict(mean_ms=round(float(g.compute_ms.mean()), 2), p95_ms=_pct(g.compute_ms, 95), frames=int(len(g)))
     fl = ctx.frame_log
     e2e = [r['e2e_ms'] for r in fl[skip:]] or [r['e2e_ms'] for r in fl]
-    fps = (len(fl) - 1) / (fl[-1]['t_out'] - fl[0]['t_out']) if len(fl) > 1 else 0.0
+    span = fl[-1]['t_out'] - fl[0]['t_out'] - ctx.pause_overlap(fl[0]['t_out'], fl[-1]['t_out']) if len(fl) > 1 else 0.0
+    fps = (len(fl) - 1) / span if span > 0 else 0.0
+    pause_s = sum(e - s for s, e in ctx.pauses)
     inf = [r['infer_s'] for r in vlm_records if r.get('status') == 'ok']
     return dict(
-        pipeline_fps=round(fps, 2), wall_s=round(ctx.wall_s, 2), wall_with_vlm_s=round(ctx.wall_with_vlm_s, 2),
+        pipeline_fps=round(fps, 2), vlm_sync_pauses=len(ctx.pauses), vlm_sync_pause_s=round(pause_s, 2), wall_s=round(ctx.wall_s, 2), wall_with_vlm_s=round(ctx.wall_with_vlm_s, 2),
         frames_processed=len(fl), frames_dropped=len(ctx.dropped), e2e_ms=dict(mean=round(float(np.mean(e2e)), 1) if e2e else None,
                                                                               p95=_pct(e2e, 95)),
         stages=stages,

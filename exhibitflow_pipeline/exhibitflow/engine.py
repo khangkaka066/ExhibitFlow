@@ -1,4 +1,6 @@
 """Engine realtime: các stage (detect -> track -> pose -> hand -> interact -> sink) chạy song song bằng thread + queue."""
+import types
+
 from .common import *  # noqa: F401,F403
 from .interaction import (OnlineInteraction, WRIST_IDX, alarm_onset, decide, hand_anchor_point,  # noqa: F401
                           vlm_contact_indices)
@@ -90,9 +92,10 @@ class GpuMonitor(threading.Thread):
 
 
 class Stage(threading.Thread):
-    def __init__(self, name, fn, in_q, out_q, ctx, flush=None):
+    def __init__(self, name, fn, in_q, out_q, ctx, flush=None, after=None):
         super().__init__(daemon=True, name=f'stage-{name}')
         self.sname, self.fn, self.in_q, self.out_q, self.ctx, self.flush = name, fn, in_q, out_q, ctx, flush
+        self.after = after          # gọi sau khi frame đã chuyển tiếp (không tính vào thời gian xử lý của stage)
         self.busy_s, self.n = 0.0, 0
 
     def _emit(self, outs):
@@ -108,6 +111,8 @@ class Stage(threading.Thread):
                 if not failed and self.flush is not None:
                     try:
                         self._emit(self.flush() or [])
+                        if self.after is not None:
+                            self.after()
                     except Exception:
                         self.ctx.errors.append((self.sname, traceback.format_exc()))
                 self.out_q.put(EOS)
@@ -122,6 +127,8 @@ class Stage(threading.Thread):
                 self.busy_s += t1 - t0
                 self.n += 1
                 self._emit([pkt] if outs is None else outs)
+                if self.after is not None:
+                    self.after()
             except Exception:
                 failed = True
                 self.ctx.errors.append((self.sname, traceback.format_exc()))
@@ -146,6 +153,8 @@ class VideoRun:
         self.tracks, self.t_cap, self.frame_log = {}, {}, []
         self.dropped = []
         self.last_frame = -1
+        self.vlm_hold = threading.Event()   # đang dừng luồng video để đợi VLM (vlm_sync): reader không đọc frame mới
+        self.pauses, self.last_pkt, self.last_alarm_n = [], None, 0
         self.art = art                      # mask hiện vật đã tính ở bước chuẩn bị (prepare_artifacts)
         self.inter = OnlineInteraction(self)
         if art.error:
@@ -164,6 +173,25 @@ class VideoRun:
         self.inter.set_artifacts(self.scenes[0]['artifacts'], self.scenes[0]['masks'])
         self.sink_times = deque(maxlen=30)
         self.writer = None
+
+    def pause_overlap(self, a, b):
+        """Tổng thời gian dừng chờ VLM nằm trong khoảng [a, b] (perf_counter) - trừ ra khi tính FPS / latency."""
+        return sum(max(0.0, min(e, b) - max(s, a)) for s, e in list(self.pauses))
+
+    def vlm_sync_wait(self):
+        """Gọi sau mỗi frame của stage interact: có đoạn đang chờ VLM -> dừng luồng đến khi VLM trả lời xong."""
+        vlm = self.vlm
+        if vlm.pending() <= 0:
+            return
+        t0 = time.perf_counter()
+        deadline = t0 + float(self.rt.get('vlm_sync_timeout_s') or 180.0)
+        self.vlm_hold.set()
+        try:
+            while vlm.pending() > 0 and not self.stop.is_set() and time.perf_counter() < deadline:
+                time.sleep(0.03)
+        finally:
+            self.pauses.append((t0, time.perf_counter()))
+            self.vlm_hold.clear()
 
     def scene_index(self, idx):
         return max(0, sum(s <= idx for s in self.scene_starts) - 1)
@@ -239,10 +267,13 @@ def _stage_fns(ctx):
     def sink(p):
         t = time.perf_counter()
         ctx.sink_times.append(t)
-        ctx.frame_log.append(dict(frame=p.idx, t_cap=p.t_cap, t_out=t, e2e_ms=(t - p.t_cap) * 1e3,
+        e2e_ms = (t - p.t_cap - ctx.pause_overlap(p.t_cap, t)) * 1e3
+        ctx.frame_log.append(dict(frame=p.idx, t_cap=p.t_cap, t_out=t, e2e_ms=e2e_ms,
                                   n_people=len(p.tracks or []), n_pose=p.n_pose, n_contact=sum(s['state'] == 'CONTACT_LIKE' for s in p.states or [])))
         if ctx.rt['render_live'] or ctx.rt.get('frame_hook'):
-            render_live(ctx, p, (t - p.t_cap) * 1e3)
+            render_live(ctx, p, e2e_ms)
+            ctx.last_pkt = types.SimpleNamespace(idx=p.idx, tracks=p.tracks, states=p.states, work=p.work, t_cap=p.t_cap)
+            ctx.last_e2e = e2e_ms
         p.work = None
         return []     # stage cuối: không chuyển tiếp
 
@@ -260,6 +291,11 @@ def reader_loop(ctx, out_q):
         for idx in range(ctx.n):
             if ctx.stop.is_set():
                 break
+            if ctx.vlm_hold.is_set():              # đang đợi VLM: giữ nguyên, rồi dời mốc thời gian để không bị coi là trễ (không bỏ frame)
+                tw = time.perf_counter()
+                while ctx.vlm_hold.is_set() and not ctx.stop.is_set():
+                    time.sleep(0.01)
+                t0 += time.perf_counter() - tw
             if realtime:
                 delay = t0 + idx / ctx.fps - time.perf_counter()
                 if delay > 0:
@@ -297,6 +333,7 @@ def render_live(ctx, p, e2e_ms):
     if union.any():
         vis[union] = (vis[union] * 0.7 + np.array(IDLE_ARTIFACT) * 0.3).astype(np.uint8)
     alarms = ctx.board.active(p.idx, int(ctx.rt['alarm_show_sec'] * ctx.fps))
+    ctx.last_alarm_n = len(ctx.board.alarms)
     contact = {s['track_id'] for s in (p.states or []) if s['state'] == 'CONTACT_LIKE'}
     for rec in p.tracks or []:
         tid = rec['id']
@@ -311,7 +348,8 @@ def render_live(ctx, p, e2e_ms):
                 if pt is not None:
                     cv2.circle(vis, (int(pt[0]), int(pt[1])), 4, (0, 0, 255), -1)
     st = ctx.sink_times
-    live_fps = (len(st) - 1) / (st[-1] - st[0]) if len(st) > 1 and st[-1] > st[0] else 0.0
+    span = st[-1] - st[0] - ctx.pause_overlap(st[0], st[-1]) if len(st) > 1 else 0.0
+    live_fps = (len(st) - 1) / span if span > 0 else 0.0
     hook = ctx.rt.get('frame_hook')           # dashboard: nhận frame đã vẽ (không có dòng chữ thông số) + tracks
     if hook is not None:
         try:
@@ -353,7 +391,9 @@ def run_video(exp, key, d, M, vlm, art, mode='parallel', rt=None):
         cv2.setNumThreads(1)
     fns = _stage_fns(ctx)
     qs = [queue.Queue(maxsize=0 if seq else rt['queue_size']) for _ in range(len(fns))] + [queue.Queue()]
-    stages = [Stage(name, fn, qs[k], qs[k + 1], ctx, flush) for k, (name, fn, flush) in enumerate(fns)]
+    sync = bool(rt.get('vlm_sync')) and mode == 'parallel'     # tuần tự: VLM chạy sau cùng nên không có gì để đợi
+    stages = [Stage(name, fn, qs[k], qs[k + 1], ctx, flush, after=ctx.vlm_sync_wait if sync and name == 'interact' else None)
+              for k, (name, fn, flush) in enumerate(fns)]
     reader = threading.Thread(target=reader_loop, args=(ctx, qs[0]), daemon=True, name='reader')
     mon = GpuMonitor(RUN['gpu_monitor_interval']) if RUN['gpu_monitor'] else None
     if mon:
@@ -376,6 +416,12 @@ def run_video(exp, key, d, M, vlm, art, mode='parallel', rt=None):
         for st in stages:
             st.join()
     ctx.t_pipeline_done = time.perf_counter()
+    if sync and ctx.last_pkt is not None and len(ctx.board.alarms) > ctx.last_alarm_n:
+        # alert của đoạn cuối đến sau khi frame cuối đã hiển thị: vẽ lại frame cuối với khung đỏ (video không kết thúc trước VLM)
+        try:
+            render_live(ctx, ctx.last_pkt, getattr(ctx, 'last_e2e', 0.0))
+        except Exception:
+            pass
     torch.set_num_threads(thr0[0])
     cv2.setNumThreads(thr0[1])
     if ctx.stop.is_set() and not ctx.errors:
