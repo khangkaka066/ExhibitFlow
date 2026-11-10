@@ -1,0 +1,13 @@
+.git
+.claude
+.serena
+**/__pycache__
+**/*.mp4
+**/*.zip
+**/*.ipynb
+**/weights
+exhibitflow_pipeline/work
+exhibitflow_pipeline/1
+dashboard_data
+.make
+external

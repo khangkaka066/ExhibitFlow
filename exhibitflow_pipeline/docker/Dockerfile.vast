@@ -1,0 +1,22 @@
+# ExhibitFlow trên nền vastai/pytorch (giữ Jupyter / SSH / portal / venv /venv/main của Vast).
+# Cài sẵn: deps, repo tracker + map, model bản đồ, llama-server (nếu cần build). Chạy lúc khởi động chỉ còn: tải weights + chạy dashboard.
+# Build (context = gốc repo):  docker build -f exhibitflow_pipeline/docker/Dockerfile.vast -t <tên> .
+#   --build-arg BASE_IMAGE=vastai/pytorch:<tag>   (đặt đúng tag đang dùng trong template; nên là bản có nvcc / Ubuntu 24.04)
+ARG BASE_IMAGE=vastai/pytorch:latest
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 \
+    PATH=/venv/main/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates build-essential cmake make ffmpeg libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# code ở /opt (không phải /workspace: Vast có thể mount volume đè lên /workspace)
+WORKDIR /opt/ExhibitFlow
+COPY Makefile ./Makefile
+COPY exhibitflow_pipeline ./exhibitflow_pipeline
+
+# Dùng lại đúng các target của Makefile (có dấu .make/stamp nên lúc chạy sẽ bỏ qua). Không chạy `check` (cần GPU) và `weights` (tải lúc chạy bằng HF_TOKEN).
+RUN make deps externals llama mapmodels PY=/venv/main/bin/python3 \
+    && test -f .make/stamp/deps && test -f .make/stamp/llama && test -f .make/stamp/mapmodels
+
+ENV EXHIBITFLOW_PREBUILT=/opt/ExhibitFlow

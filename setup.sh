@@ -27,8 +27,12 @@ echo "[setup] python=$PY branch=$BRANCH dir=$REPO_DIR"
 command -v git >/dev/null  || { apt-get update -qq && apt-get install -y -qq git; }
 command -v make >/dev/null || { apt-get update -qq && apt-get install -y -qq make; }
 
-# 1. code
-if [ -d "$REPO_DIR/.git" ]; then
+# 0. image dựng sẵn (Dockerfile.vast): code + deps + llama-server đã nằm ở $EXHIBITFLOW_PREBUILT -> chỉ còn tải weights
+if [ -n "${EXHIBITFLOW_PREBUILT:-}" ] && [ -f "$EXHIBITFLOW_PREBUILT/.make/stamp/deps" ]; then
+    echo "[setup] dùng image dựng sẵn: $EXHIBITFLOW_PREBUILT"
+    REPO_DIR="$EXHIBITFLOW_PREBUILT"
+    export DATA="${DATA:-/workspace/dashboard_data}"   # kết quả lưu ở /workspace (bền)
+elif [ -d "$REPO_DIR/.git" ]; then
     git -C "$REPO_DIR" fetch --depth 1 origin "$BRANCH"
     git -C "$REPO_DIR" checkout -q "$BRANCH"
     git -C "$REPO_DIR" reset -q --hard "origin/$BRANCH"
