@@ -1,7 +1,8 @@
-"""Tiến trình con chạy tracker (ByteTrack-DMA-LTC + ReID) riêng, để stage `track` thoát GIL của tiến trình chính.
+"""Tiến trình con chạy 1 model nặng mã Python (tracker ByteTrack-DMA-LTC hoặc RTMW hand) riêng, để stage tương ứng thoát GIL
+của tiến trình chính.
 
-Chạy bởi RemoteTracker (perception.py):  python -m exhibitflow.tracker_worker <địa chỉ socket>  (khoá xác thực qua biến EF_TRK_KEY).
-Giao thức (request -> reply, đồng bộ từng lần): init / shm / reset / upd / quit. Ảnh đi qua shared memory, không qua pickle.
+Chạy bởi _RemoteProc (perception.py):  python -m exhibitflow.tracker_worker <địa chỉ socket>  (khoá xác thực qua EF_TRK_KEY).
+Giao thức (request -> reply, đồng bộ từng lần): init / shm / reset / upd (tracker) / hand / quit. Ảnh đi qua shared memory, không qua pickle.
 """
 import os
 import sys
@@ -24,7 +25,7 @@ def _attach(name):
 
 def main():
     conn = Client(sys.argv[1], family='AF_UNIX', authkey=bytes.fromhex(os.environ['EF_TRK_KEY']))
-    trk, shm = None, None
+    model, shm = None, None
     try:
         while True:
             msg = conn.recv()
@@ -34,12 +35,15 @@ def main():
                     cfg = msg[1]
                     import torch
                     torch.set_num_threads(int(cfg.get('threads') or 1))
+                    from pathlib import Path
                     from exhibitflow import settings
-                    settings.WEIGHT_ROOTS[:] = [__import__('pathlib').Path(p) for p in cfg['weight_roots']]
+                    settings.WEIGHT_ROOTS[:] = [Path(p) for p in cfg['weight_roots']]
                     settings.set_paths(work=cfg['work'])
+                    for k, v in (cfg.get('cfg') or {}).items():
+                        settings.CFG[k] = v
                     import exhibitflow.perception  # noqa: F401  đăng ký backend
                     from exhibitflow.common import build
-                    trk = build('tracker', cfg['spec'])
+                    model = build(cfg['kind'], cfg['spec'])
                     conn.send(('ok', None))
                 elif op == 'shm':
                     if shm is not None:
@@ -47,13 +51,19 @@ def main():
                     shm = _attach(msg[1])
                     conn.send(('ok', None))
                 elif op == 'reset':
-                    trk.reset(msg[1])
+                    model.reset(msg[1])
                     conn.send(('ok', None))
                 elif op == 'upd':
                     _, shape, dets, s, use_native = msg
                     img = np.ndarray(shape, np.uint8, buffer=shm.buf)
-                    out = trk.update(dets, img, native=img if use_native else None, S=s)
+                    out = model.update(dets, img, native=img if use_native else None, S=s)
                     conn.send(('ok', out))
+                elif op == 'hand':
+                    _, shape, recs, s = msg
+                    img = np.ndarray(shape, np.uint8, buffer=shm.buf)
+                    model(img, recs, s)
+                    keys = ('hand_kp', 'hand_kc', 'hand_quality')
+                    conn.send(('ok', [{k: r[k] for k in keys} if 'hand_kp' in r else None for r in recs]))
                 elif op == 'quit':
                     conn.send(('ok', None))
                     break

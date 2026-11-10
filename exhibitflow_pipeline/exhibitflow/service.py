@@ -133,7 +133,8 @@ class Engine:
         """local: trả VRAM của tracker / pose / hand / VLM sau mỗi video (detector giữ lại)."""
         M = self.M
         if M is not None:
-            getattr(M.tracker, 'close', lambda: None)()          # tracker ở tiến trình riêng: dừng tiến trình, trả VRAM
+            for m in (M.tracker, M.hand):                         # tracker / hand ở tiến trình riêng: dừng tiến trình, trả VRAM
+                getattr(m, 'close', lambda: None)()
             M.tracker = None
             M.pose = M.hand = build('hand', dict(backend='none'))
         if self.vlm is not None:
@@ -237,5 +238,7 @@ class Engine:
                 self.seg.close()
             except Exception:
                 pass
+        for m in (getattr(self.M, 'tracker', None), getattr(self.M, 'hand', None)):
+            getattr(m, 'close', lambda: None)()                  # tiến trình con (nếu có)
         self.models = self.M = self.vlm = self.seg = None
         free_gpu()

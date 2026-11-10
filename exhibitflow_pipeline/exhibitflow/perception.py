@@ -212,14 +212,13 @@ class ByteTrackDMALTC:
         return _attach_scores(keep, dets)
 
 
-@register('tracker', 'bytetrack_dma_ltc_proc')
-class RemoteTracker:
-    """ByteTrack-DMA-LTC chạy trong TIẾN TRÌNH RIÊNG (exhibitflow/tracker_worker.py). Stage `track` là phần nặng mã Python nhất
-    (ReID + LTC + DMA, nhiều kernel nhỏ phát từ CPU): trong cùng tiến trình nó tranh GIL với 6 stage khác. Tiến trình riêng có GIL
-    riêng nên không bị các stage kia làm chậm (và ngược lại). Giao diện giống ByteTrackDMALTC (reset / update).
-    Đổi lại: thêm 1 CUDA context (~0.5 GB VRAM) và ~2-4 ms chép ảnh qua shared memory mỗi frame."""
+class _RemoteProc:
+    """Chạy 1 model (tracker / hand) trong TIẾN TRÌNH RIÊNG (exhibitflow/tracker_worker.py). Các stage track / hand là phần nặng mã
+    Python nhỏ (nhiều kernel / lời gọi nhỏ phát từ CPU): trong cùng tiến trình chúng tranh GIL với các stage còn lại. Tiến trình riêng
+    có GIL riêng nên không bị các stage kia làm chậm (và ngược lại). Đổi lại: thêm 1 CUDA context (~0.5 GB VRAM) và vài ms chép ảnh
+    qua shared memory mỗi frame."""
 
-    def __init__(self, startup_timeout=300, threads=1, **spec):
+    def __init__(self, kind, spec, startup_timeout=300, threads=1):
         import atexit
         import secrets
         import shutil
@@ -228,9 +227,9 @@ class RemoteTracker:
         import threading
         from multiprocessing.connection import Listener
         self._lock, self._shm, self._closed = threading.Lock(), None, False
-        self._dir = tempfile.mkdtemp(prefix='ef_trk_')
+        self._dir = tempfile.mkdtemp(prefix='ef_proc_')
         key = secrets.token_bytes(16)
-        addr = os.path.join(self._dir, 'trk.sock')
+        addr = os.path.join(self._dir, 'w.sock')
         listener = Listener(addr, family='AF_UNIX', authkey=key)
         env = dict(os.environ, EF_TRK_KEY=key.hex(),
                    PYTHONPATH=os.pathsep.join([str(settings.PROJECT_DIR), os.environ.get('PYTHONPATH', '')]))
@@ -245,13 +244,12 @@ class RemoteTracker:
         if 'conn' not in box:
             self._kill()
             shutil.rmtree(self._dir, ignore_errors=True)
-            raise RuntimeError(f'Tiến trình tracker không khởi động được (mã {self.proc.poll()})')
+            raise RuntimeError(f'Tiến trình {kind} không khởi động được (mã {self.proc.poll()})')
         self.conn = box['conn']
         atexit.register(self.close)
-        spec = dict(spec, backend='bytetrack_dma_ltc')
-        self._call(('init', dict(spec=spec, weight_roots=[str(p) for p in settings.WEIGHT_ROOTS], work=str(settings.WORK),
-                                 threads=threads)), timeout=startup_timeout)
-        print(f'    Tracker chạy ở tiến trình riêng (pid {self.proc.pid})')
+        self._call(('init', dict(kind=kind, spec=spec, weight_roots=[str(q) for q in settings.WEIGHT_ROOTS],
+                                 work=str(settings.WORK), threads=threads, cfg=dict(settings.CFG))), timeout=startup_timeout)
+        print(f'    {kind} chạy ở tiến trình riêng (pid {self.proc.pid})')
 
     def _kill(self):
         try:
@@ -263,27 +261,24 @@ class RemoteTracker:
     def _call(self, msg, timeout=120):
         with self._lock:
             if self._closed:
-                raise RuntimeError('Tiến trình tracker đã đóng')
+                raise RuntimeError('Tiến trình con đã đóng')
             self.conn.send(msg)
             t0 = time.perf_counter()
             while not self.conn.poll(1.0):
                 if self.proc.poll() is not None:
-                    raise RuntimeError(f'Tiến trình tracker đã chết (mã {self.proc.returncode})')
+                    raise RuntimeError(f'Tiến trình con đã chết (mã {self.proc.returncode})')
                 if time.perf_counter() - t0 > timeout:
-                    raise TimeoutError(f'Tiến trình tracker không trả lời sau {timeout}s')
+                    raise TimeoutError(f'Tiến trình con không trả lời sau {timeout}s')
             status, val = self.conn.recv()
         if status == 'err':
-            raise RuntimeError('Lỗi trong tiến trình tracker:\n' + val)
+            raise RuntimeError('Lỗi trong tiến trình con:\n' + val)
         return val
 
-    def reset(self, fps):
-        self._call(('reset', float(fps)))
-
-    def update(self, dets, frame, native=None, S=1.0):
+    def _put_image(self, img):
+        """Chép ảnh vào vùng nhớ chung (cấp lại khi ảnh lớn hơn); trả shape."""
         from multiprocessing import shared_memory
-        img, s = (native, S) if native is not None else (frame, 1.0)
         img = np.ascontiguousarray(img)
-        if self._shm is None or self._shm.size < img.nbytes:      # (cấp lại) vùng nhớ chung khi ảnh lớn hơn
+        if self._shm is None or self._shm.size < img.nbytes:
             old = self._shm
             self._shm = shared_memory.SharedMemory(create=True, size=img.nbytes)
             self._call(('shm', self._shm.name))
@@ -291,7 +286,7 @@ class RemoteTracker:
                 old.close()
                 old.unlink()
         np.ndarray(img.shape, img.dtype, buffer=self._shm.buf)[...] = img
-        return self._call(('upd', img.shape, [list(map(float, d)) for d in dets] if dets else [], float(s), native is not None))
+        return img.shape
 
     def close(self):
         if self._closed:
@@ -321,6 +316,41 @@ class RemoteTracker:
             self.close()
         except Exception:
             pass
+
+
+@register('tracker', 'bytetrack_dma_ltc_proc')
+class RemoteTracker(_RemoteProc):
+    """ByteTrack-DMA-LTC ở tiến trình riêng. Giao diện giống ByteTrackDMALTC (reset / update)."""
+
+    def __init__(self, startup_timeout=300, threads=1, **spec):
+        super().__init__('tracker', dict(spec, backend='bytetrack_dma_ltc'), startup_timeout, threads)
+
+    def reset(self, fps):
+        self._call(('reset', float(fps)))
+
+    def update(self, dets, frame, native=None, S=1.0):
+        img, s = (native, S) if native is not None else (frame, 1.0)
+        shape = self._put_image(img)
+        return self._call(('upd', shape, [list(map(float, d)) for d in dets] if dets else [], float(s), native is not None))
+
+
+@register('hand', 'rtmw_proc')
+class RemoteHand(_RemoteProc):
+    """RTMW hand ở tiến trình riêng. Giao diện giống RTMWHand (gọi như hàm: hand(native, recs, S))."""
+    enabled = True
+
+    def __init__(self, startup_timeout=300, **spec):
+        super().__init__('hand', dict(spec, backend='rtmw'), startup_timeout, 1)
+
+    def __call__(self, native, recs, S):
+        idx = [i for i, r in enumerate(recs) if r.get('kp') is not None]   # chỉ người đã có khung xương mới có bàn tay
+        if not idx:
+            return
+        small = [dict(box=recs[i]['box'], kp=1, pose_crop=recs[i].get('pose_crop'), pose_box=recs[i].get('pose_box')) for i in idx]
+        shape = self._put_image(native)
+        for i, res in zip(idx, self._call(('hand', shape, small, float(S)))):
+            if res:
+                recs[i].update(res)
 
 
 class _UltralyticsTracker:
