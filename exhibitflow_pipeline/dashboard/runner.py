@@ -195,12 +195,12 @@ class State:
         with self.lock:
             self.logs.append(f"{time.strftime('%H:%M:%S')}  {msg}")
 
-    def set_frame(self, bgr, tracks, size, idx, n, fps, e2e):
+    def set_frame(self, bgr, tracks, size, idx, n, fps, e2e, force=False):
         now = time.time()
         with self.lock:
             self.frame_idx, self.n_frames, self.fps, self.e2e_ms = idx, n, fps, e2e
             self.last_bgr, self.last_tracks = bgr, tracks
-        if now - self._t_jpeg < 0.04:
+        if not force and now - self._t_jpeg < 0.04:      # giới hạn ~25 jpeg/s; frame vẽ lại cuối (force) luôn được mã hoá
             return
         ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok:
@@ -368,7 +368,8 @@ class PipelineRunner:
         st.people = people
         st.detections_total += len(p.tracks or [])
         st.set_frame(vis, [dict(id=r['id'], box=list(map(float, r['box']))) for r in p.tracks or []],
-                     (W, Hh), p.idx, ctx.n, perf['fps'], perf['e2e_ms'])
+                     (W, Hh), p.idx, ctx.n, perf['fps'], perf['e2e_ms'],
+                     force=bool(getattr(p, 'redraw', False)))
 
     def _alert_hook(self, ctx, task, rec, behavior, conf):
         st = self.state

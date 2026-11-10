@@ -422,6 +422,7 @@ def run_video(exp, key, d, M, vlm, art, mode='parallel', rt=None):
         vlm.drain()
     if sync and ctx.last_pkt is not None and len(ctx.board.alarms) > ctx.last_alarm_n:
         try:
+            ctx.last_pkt.redraw = True
             render_live(ctx, ctx.last_pkt, getattr(ctx, 'last_e2e', 0.0))
         except Exception:
             pass
