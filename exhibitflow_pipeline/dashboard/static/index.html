@@ -70,6 +70,9 @@ select.runsel{background:var(--bg);border:1px solid var(--line);border-radius:8p
 .pbmode .prog{height:10px;cursor:pointer;overflow:visible;position:relative;touch-action:none}.pbmode .prog i{border-radius:3px;transition:none}
 .pbmode #seekknob{display:block}#seekknob{display:none;position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px var(--green);pointer-events:none}
 .pbmode #pbPlay,.pbmode #seekTime{display:inline-block!important}
+.f textarea{width:100%;min-height:150px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12px/1.45 ui-monospace,Consolas,monospace;resize:vertical}
+.mdls{display:grid;gap:6px;margin-top:12px;font-size:12px}.mdls div{display:flex;gap:8px;align-items:baseline;border-top:1px solid var(--line);padding-top:6px}
+.mdls b{min-width:104px;color:var(--mut);font-weight:600}.mdls span{word-break:break-all}.mdls small{color:var(--mut);display:block}
 .prog{height:4px;background:var(--line);border-radius:3px;margin-top:10px;overflow:hidden}.prog i{display:block;height:100%;width:0;background:var(--green);transition:width .3s}
 .mapbox{position:relative;border-radius:9px;overflow:hidden;background:#0b1220;aspect-ratio:1/1}
 .mapbox canvas{width:100%;height:100%;display:block}
@@ -175,6 +178,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
     <div class="card">
       <h2>System status</h2>
       <div class="gauges" style="grid-template-columns:repeat(2,1fr)" id="gauges"></div>
+      <div class="mdls" id="modelList"></div>
     </div>
   </div>
   <div class="card" id="resCard">
@@ -195,6 +199,11 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <div class="f"><label>max_new_tokens</label><input type="number" id="s-vlm_max_new_tokens"></div>
       <div class="f chk"><input type="checkbox" id="s-vlm_short_json"><label>Chỉ trả {"label","confidence"} (short JSON)</label></div>
       <div class="f"><label>Ngưỡng tin cậy VLM tối thiểu</label><input type="number" id="s-vlm_min_conf" step="0.05" min="0" max="1" placeholder="mặc định"></div>
+      <div class="f"><label>Prompt VLM <button class="btn" type="button" id="resetPrompt" style="padding:1px 8px;font-size:11px;margin-left:8px">Khôi phục mặc định</button></label>
+        <textarea id="s-vlm_prompt" spellcheck="false"></textarea>
+        <small>Biến: <code>{n}</code> số ảnh · <code>{dt}</code> giây giữa 2 ảnh · <code>{tid}</code> ID người. Dấu ngoặc nhọn khác phải viết đôi <code>{{ }}</code>. Áp dụng từ lần phân tích kế tiếp, không cần nạp lại model.</small></div>
+      <div class="f"><label>System prompt <button class="btn" type="button" id="resetSys" style="padding:1px 8px;font-size:11px;margin-left:8px">Khôi phục mặc định</button></label>
+        <textarea id="s-vlm_system_prompt" spellcheck="false" style="min-height:90px"></textarea></div>
     </div>
     <div class="card"><h2>Pipeline</h2>
       <div class="f"><label>Chế độ pipeline</label><select id="s-pipeline_mode"><option value="tracking">Tracking (nhanh nhất)</option><option value="tracking_seg">Tracking + Segmentation (phát hiện chạm hiện vật)</option><option value="full">Full: Tracking + Segmentation + VLM (cảnh báo)</option></select><small>Chỉ nạp phần cần dùng. Chọn chế độ nhẹ hơn khi model đã nạp thì không phải nạp lại; chọn nặng hơn sẽ nạp lại. Không có VLM thì chưa có cảnh báo.</small></div>
@@ -208,6 +217,8 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <div class="f chk"><input type="checkbox" id="s-use_cpu"><label>Chạy CPU (rất chậm)</label></div>
     </div>
     <div class="card"><h2>Map 2D</h2>
+      <div class="f chk"><input type="checkbox" id="s-make_map"><label>Tự tạo map 2D từ video khi phân tích (mặc định tắt)</label></div>
+      <small style="color:var(--mut)">Tắt: không tạo map, bỏ bước ~15–25 s lần đầu mỗi video. Vẫn dùng được floorplan upload thủ công bên dưới.</small>
       <div class="f"><label>Ảnh nền floorplan</label><select id="s-map_image"><option value="auto">Tự động (tạo từ video khi phân tích)</option><option value="none">Không dùng ảnh (lưới trống)</option></select></div>
       <div class="f"><label>Upload floorplan khác</label><input type="file" id="mapFile" accept="image/*"></div>
       <small style="color:var(--mut)">Hiệu chỉnh map: bấm 4 điểm trên khung hình video (ở trái), sau đó 4 điểm tương ứng trên map (ở phải), cùng thứ tự. Chọn điểm trên mặt sàn.</small>
@@ -227,7 +238,7 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600)};
 const api=async(u,o)=>{const r=await fetch(u,o);if(!r.ok){let d='';try{d=(await r.json()).detail}catch{}throw new Error(d||r.statusText)}return r.json()};
-let ST={}, SET={}, mapImg=null, mapVer=null, PB=null, autoRun=null, RUNS=[];
+let MD=null, ST={}, SET={}, mapImg=null, mapVer=null, PB=null, autoRun=null, RUNS=[];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ---- nav ---- */
@@ -383,7 +394,7 @@ $('#alertRows').onclick=e=>{const tr=e.target.closest('tr[data-tid]');if(!tr||!P
 
 /* ---- kết quả phân tích: thông tin video + latency từng module (kể cả VLM) ---- */
 const f1=(v,d=1)=>v==null?'—':(+v).toFixed(d);
-const tag=s=>s==='cache'?'<span class="tag cache">dùng cache</span>':s?'<span class="tag new">tính mới</span>':'';
+const tag=s=>s==='off'?'<span class="tag" style="background:var(--line)">tắt</span>':s==='cache'?'<span class="tag cache">dùng cache</span>':s?'<span class="tag new">tính mới</span>':'';
 function renderResult(r){
   const v=r.video,p=r.performance||{},pr=r.prepare||{},mp=pr.map||{},sm=r.summary||{},e2e=p.e2e_ms||{},stg=p.stages||{},vl=p.vlm||{},gpus=(r.environment||{}).gpus||[];
   const K=(a,b,c)=>`<div class="k"><small>${a}</small><b>${b}</b><small>${c||''}</small></div>`;
@@ -400,13 +411,14 @@ function renderResult(r){
     <table class="mini"><thead><tr><th>Module (ms / frame)</th><th>trung bình</th><th>p95</th></tr></thead><tbody>${rows||'<tr><td colspan=3>—</td></tr>'}</tbody></table>
     <table class="mini" style="margin-top:14px"><thead><tr><th>Chuẩn bị (1 lần / video)</th><th>giây</th><th></th></tr></thead><tbody>
       <tr><td>Segmentation hiện vật${tag(pr.segmentation_source)}</td><td>${f1(pr.segmentation_s,2)}</td><td>${pr.n_artifacts??'—'} hiện vật</td></tr>
-      <tr><td>Map 2D${tag(mp.source)}</td><td>${f1(mp.seconds,2)}</td><td>${esc(mp.method||'—')}</td></tr></tbody></table>
+      <tr><td>Map 2D${tag(mp.source)}</td><td>${mp.source==='off'?'—':f1(mp.seconds,2)}</td><td>${esc(mp.method||'—')}</td></tr></tbody></table>
   </div><div>
     <table class="mini"><thead><tr><th>VLM</th><th>trung bình</th><th>p95</th></tr></thead><tbody>
       <tr><td>Suy luận (s)</td><td>${f1(vl.infer_mean_s,2)}</td><td>${f1(vl.infer_p95_s,2)}</td></tr>
       <tr><td>Chờ hàng đợi (s)</td><td>${f1(vl.queue_wait_mean_s,2)}</td><td></td></tr>
       <tr><td>Số lượt (thành công)</td><td>${vl.n_tasks??0} (${vl.n_ok??0})</td><td></td></tr></tbody></table>
     ${vt?`<table class="mini" style="margin-top:14px"><thead><tr><th>Lượt VLM (s)</th><th>nhãn</th><th>tin cậy</th><th>chờ</th><th>prefill</th><th>suy luận</th><th>tổng</th></tr></thead><tbody>${vt}</tbody></table>`:''}
+    ${(r.models||[]).length?`<div class="mdls">${modelRows(r.models)}</div>`:''}
     <table class="mini" style="margin-top:14px"><thead><tr><th>Nạp model (s)</th><th>nạp</th><th>warmup</th></tr></thead><tbody>${lt||'<tr><td colspan=3>—</td></tr>'}</tbody></table>
   </div></div>`}
 
@@ -419,13 +431,15 @@ async function sys(){try{const s=await api('/api/system');const g=s.gpu&&s.gpu[0
     :gauge('Disk',100*s.disk_used/s.disk_total,Math.round(100*s.disk_used/s.disk_total)+'%',s.disk_used+' / '+s.disk_total+' GB','#f08a24'))}catch{}}
 
 /* ---- settings ---- */
-const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode','pipeline_mode'];
+const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode','pipeline_mode','make_map','vlm_prompt','vlm_system_prompt'];
 let cal={v:[],m:[],H:null,frameImg:null,geo:null};
 async function openSettings(){
   SET=await api('/api/settings');
   const mi=$('#s-map_image');[...mi.options].forEach(o=>{if(!['auto','none'].includes(o.value))o.remove()});
   if(!['auto','none'].includes(SET.map_image)){const o=new Option('Upload: '+SET.map_image,SET.map_image);mi.add(o)}
   FIELDS.forEach(k=>{const e=$('#s-'+k);if(e.type==='checkbox')e.checked=!!SET[k];else e.value=SET[k]??''});
+  try{MD=await api('/api/models')}catch{MD=null}
+  if(MD){if(!SET.vlm_prompt)$('#s-vlm_prompt').value=MD.prompt.vlm;if(!SET.vlm_system_prompt)$('#s-vlm_system_prompt').value=MD.prompt.system}
   cal.v=[];cal.m=[];
   cal.frameImg=null;const im=new Image();im.onload=()=>{cal.frameImg=im;drawCal()};im.onerror=()=>drawCal();im.src='/api/frame?'+Date.now();drawCal();
 }
@@ -448,11 +462,16 @@ $('#calIdent').onclick=()=>{SET.homography={src:[[0,0],[1,0],[1,1],[0,1]],dst:[[
 $('#mapFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);
   try{const r=await api('/api/map-image',{method:'POST',body:fd});toast('Đã upload floorplan');await openSettings();$('#s-map_image').value=r.name;loadMap();setTimeout(drawCal,300)}catch(x){toast('Lỗi: '+x.message)}};
 $('#s-map_image').onchange=async()=>{await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({map_image:$('#s-map_image').value})});loadMap();setTimeout(drawCal,300)};
+$('#resetPrompt').onclick=()=>{if(MD)$('#s-vlm_prompt').value=MD.prompt.vlm};
+$('#resetSys').onclick=()=>{if(MD)$('#s-vlm_system_prompt').value=MD.prompt.system};
 $('#saveSet').onclick=async()=>{
   const body={homography:SET.homography};
   FIELDS.forEach(k=>{const e=$('#s-'+k);let v=e.type==='checkbox'?e.checked:e.type==='number'?(e.value===''?null:+e.value):e.value;body[k]=v});
+  if(MD){if((body.vlm_prompt||'').trim()===MD.prompt.vlm.trim())body.vlm_prompt='';if((body.vlm_system_prompt||'').trim()===MD.prompt.system.trim())body.vlm_system_prompt=''}   // giống mặc định -> lưu trống
   try{SET=await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Đã lưu cài đặt');loadMap()}catch(x){toast('Lỗi: '+x.message)}};
 
+const modelRows=L=>L.map(m=>`<div><b>${esc(m.role)}</b><span>${esc(m.name)}<small>${esc(m.detail||'')}</small></span></div>`).join('');
+api('/api/models').then(d=>{MD=d;$('#modelList').innerHTML=modelRows(d.models)}).catch(()=>{});
 loadMap();loadRuns();poll();sys();setInterval(poll,800);setInterval(sys,3000);
 </script>
 </body>

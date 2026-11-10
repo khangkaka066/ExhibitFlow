@@ -164,6 +164,9 @@ SYSTEM_PROMPT = ('You are a careful CCTV analyst for a museum. Judge only what i
                  'Touching means the hand visibly reaches the exhibit or its pedestal; being near is not touching. '
                  'Always answer with a single JSON object and nothing else.')
 
+DEFAULT_PROMPT_TEMPLATE, DEFAULT_SYSTEM_PROMPT = PROMPT_TEMPLATE, SYSTEM_PROMPT   # bản gốc (dashboard ghi đè rồi khôi phục được)
+PROMPT_FIELDS = ('n', 'dt', 'tid')                                                  # biến được {format}; dấu { } khác phải viết {{ }}
+
 ANOMALY_LABELS = ('touching', 'holding', 'stealing')
 VLM_MIN_CONF = 0.0
 ALARM_ONSET = 'vlm'      # 'vlm' | 'contact' | 'event'  (như notebook gốc)

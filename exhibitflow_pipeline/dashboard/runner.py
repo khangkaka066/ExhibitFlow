@@ -30,7 +30,9 @@ DEFAULT_SETTINGS = dict(
     weights_dir='', work_dir='work', use_cpu=False,
     pipeline_mode='full',             # 'tracking' | 'tracking_seg' (+ segmentation hiện vật, phát hiện chạm) | 'full' (+ VLM, cảnh báo)
     scene_mode='auto',                # 'auto' = tách cảnh nhanh (video có đổi camera) | 'first' = 1 cảnh cố định, bỏ qua tách cảnh
+    vlm_prompt='', vlm_system_prompt='',   # trống = dùng prompt mặc định; {n} số ảnh, {dt} giây giữa 2 ảnh, {tid} ID người; { } khác viết {{ }}
     # --- map 2D: 4 điểm ảnh video (0-1) -> 4 điểm trên map (0-1) ---
+    make_map=False,                   # True: tự tạo map 2D từ video khi phân tích (mất ~15-25 s lần đầu, cache theo video). Mặc định tắt
     map_image='auto',                 # 'auto' (tạo từ video khi phân tích; trống lúc đầu) | 'none' | tên file đã upload (hiệu chỉnh tay)
     homography=dict(src=[[0, 0], [1, 0], [1, 1], [0, 1]], dst=[[0, 0], [1, 0], [1, 1], [0, 1]]),
 )
@@ -63,7 +65,48 @@ def model_key(s):
 
 
 def auto_map(s):
-    return s.get('map_image', 'auto') in ('auto', 'default', '')
+    return bool(s.get('make_map')) and s.get('map_image', 'auto') in ('auto', 'default', '')
+
+
+def _settings_prompt(name):
+    from exhibitflow import settings
+    return getattr(settings, name)
+
+
+def validate_prompt(text):
+    """Thử format với số liệu mẫu để báo lỗi sớm (ngoặc { } sai, biến lạ) thay vì để VLM lỗi giữa lần chạy."""
+    from exhibitflow import settings
+    try:
+        text.format(n=8, dt=0.5, tid=1)
+    except (KeyError, IndexError, ValueError) as e:
+        raise ValueError(f'Prompt không hợp lệ ({type(e).__name__}: {e}). Chỉ dùng biến {{n}} {{dt}} {{tid}}; dấu {{ }} khác phải viết {{{{ }}}}')
+    return text
+
+
+def apply_prompts(s):
+    """Áp prompt từ cài đặt vào engine mỗi lần chạy (không cần nạp lại model); trống -> khôi phục prompt gốc."""
+    from exhibitflow import settings
+    pt = (s.get('vlm_prompt') or '').strip() or settings.DEFAULT_PROMPT_TEMPLATE
+    sp = (s.get('vlm_system_prompt') or '').strip() or settings.DEFAULT_SYSTEM_PROMPT
+    settings.apply_overrides(dict(PROMPT_TEMPLATE=validate_prompt(pt), SYSTEM_PROMPT=sp))
+
+
+def models_info():
+    """Tên model đang cấu hình (đọc từ settings.MODELS) để hiển thị trên dashboard / ghi vào run.json."""
+    from exhibitflow import settings
+    M = settings.MODELS
+    d, t, p, h, sg, v = (M.get(k) or {} for k in ('detector', 'tracker', 'pose', 'hand', 'segmenter', 'vlm'))
+    vname = (f"{str(v.get('repo_id', '')).split('/')[-1].replace('-GGUF', '')} {v.get('quant_file', '')}".strip()
+             if v.get('backend') == 'llama_cpp' else v.get('backend'))
+    return [dict(role='Detector', name='YOLOX', detail=f"{d.get('ckpt')} · {d.get('test_size')} · fp16={d.get('fp16')}"),
+            dict(role='Tracker', name='ByteTrack-DMA-LTC',
+                 detail=f"ReID {t.get('reid_model') if t.get('with_reid') else 'off'} · LTC {t.get('ltc_ckpt')} · DMA {t.get('dma_ckpt')}"),
+            dict(role='Pose', name=str(p.get('weights') or p.get('backend')), detail=p.get('backend')),
+            dict(role='Hand', name=f"RTMW {h.get('mode', '')}".strip() if h.get('backend') == 'rtmw' else str(h.get('backend')),
+                 detail=h.get('backend')),
+            dict(role='Segmenter · DINO', name=str(sg.get('dino')), detail='Grounding-DINO · fp16=%s' % sg.get('fp16')),
+            dict(role='Segmenter · SAM', name=str(sg.get('sam')), detail='SAM 2.1'),
+            dict(role='VLM', name=vname, detail=f"{v.get('repo_id', '')} · mmproj {v.get('mmproj', '')} · ctx {v.get('ctx')}")]
 
 
 def homography(h):
@@ -96,6 +139,9 @@ class State:
         self.reset()
 
     def save_settings(self, new):
+        for k in ('vlm_prompt',):
+            if (new.get(k) or '').strip():
+                validate_prompt(new[k])                        # ValueError -> server trả 400, không lưu
         with self.lock:
             for k, v in new.items():
                 if k in DEFAULT_SETTINGS:
@@ -402,7 +448,8 @@ class PipelineRunner:
                                n_frames=v.get('n_frames'), width=v.get('width'), height=v.get('height'),
                                duration_s=round(v['n_frames'] / v['fps'], 2) if v.get('fps') else None),
                     mode=res.get('mode'), settings={k: s.get(k) for k in keep}, local=bool(self.local),
-                    prepare=dict(res.get('prepare') or {}, map=st.map_info), load_times=cfg.get('load_times'),
+                    models=models_info(), prompt=dict(vlm=_settings_prompt('PROMPT_TEMPLATE'), system=_settings_prompt('SYSTEM_PROMPT')),
+                    prepare=dict(res.get('prepare') or {}, map=st.map_info or dict(source='off')), load_times=cfg.get('load_times'),
                     environment=cfg.get('environment'), performance=perf, summary=res.get('summary'),
                     vlm_tasks=[{k: t.get(k) for k in ('task', 'track_id', 'status', 'decision', 'label', 'confidence', 'n_images',
                                                       'n_input_tokens', 'latency_s', 'infer_s', 'prefill_s', 'queue_wait_s', 'error')}
@@ -444,6 +491,7 @@ class PipelineRunner:
         map_thread = None
         try:
             s = st.settings
+            apply_prompts(s)                           # prompt VLM theo cài đặt (đọc lúc chạy, không cần nạp lại model)
             if auto_map(s):                            # chạy song song với nạp model
                 map_thread = threading.Thread(target=self._make_map, args=(video,), daemon=True, name='map-gen')
                 map_thread.start()

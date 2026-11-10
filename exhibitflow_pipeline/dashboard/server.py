@@ -154,9 +154,18 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def get_settings():
         return state.settings
 
+    @app.get('/api/models')
+    def get_models():
+        from dashboard.runner import models_info
+        from exhibitflow import settings
+        return dict(models=models_info(), prompt=dict(vlm=settings.DEFAULT_PROMPT_TEMPLATE, system=settings.DEFAULT_SYSTEM_PROMPT))
+
     @app.put('/api/settings')
     def put_settings(body: dict):
-        out = state.save_settings(body)
+        try:
+            out = state.save_settings(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         runner.preload()                      # cấu hình model đổi -> nạp lại ở nền (bỏ qua nếu không đổi / đang chạy)
         return out
 
