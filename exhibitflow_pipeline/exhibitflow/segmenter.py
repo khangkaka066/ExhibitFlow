@@ -454,8 +454,7 @@ def prepare_artifacts(key, d, M, seg):
     res = ArtifactResult(key)
     t0 = time.perf_counter()
     try:
-        st = Path(str(d['path'])).stat()               # cache theo nội dung (size + mtime): video khác trùng tên không dùng nhầm mask cũ
-        ckey = f'{key}_{st.st_size:x}{st.st_mtime_ns // 10**6:x}'
+        ckey = f"v{video_fingerprint(d['path'])}"   # cache theo NỘI DUNG video: video khác trùng tên không dùng nhầm, upload lại không sinh bản mới
         scenes = cached_video_scenes(ckey, key, d)
         frames = read_frames(d, [r for _, r in scenes])
         sources, reviews = [], []

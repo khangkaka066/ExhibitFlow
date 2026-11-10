@@ -92,6 +92,41 @@ def _llama_release_assets():
     return t, [f'{base}/llama-{t}-bin-ubuntu-cuda-12.8-x64.tar.gz', f'{base}/cudart-llama-{t}-bin-ubuntu-cuda-12.8-x64.tar.gz']
 
 
+def _llama_installed():
+    """Cặp (llama-*, cudart-llama-*) CÙNG tag đã cài xong trong work/llama_bin -> (tag, [2 thư mục]); nhiều bản thì lấy tag mới nhất.
+    Dùng lại bản này thay vì hỏi GitHub 'bản mới nhất' mỗi lần chạy: llama.cpp ra bản mới gần như mỗi ngày, mỗi lần tải thêm ~0.5 GB
+    mà bản cũ không ai xoá -> ổ đĩa đầy dần sau mỗi lần chạy lại."""
+    root, suf = settings.WORK / 'llama_bin', '-bin-ubuntu-cuda-12.8-x64'
+    found = []
+    for d in root.glob('llama-*' + suf):
+        tag = d.name[len('llama-'):-len(suf)]
+        c = root / f'cudart-llama-{tag}{suf}'
+        if (d / '.done').exists() and (c / '.done').exists():
+            found.append((int(tag[1:]) if tag[1:].isdigit() else -1, tag, [d, c]))
+    return max(found)[1:] if found else None
+
+
+def _llama_prune(keep):
+    """Xoá các bản llama.cpp cũ và file tải dở (.part / .tar.gz) trong work/llama_bin, chỉ giữ bản đang dùng."""
+    root = settings.WORK / 'llama_bin'
+    keep = {Path(k).resolve() for k in keep}
+    freed = 0
+    for p in root.iterdir():
+        if p.resolve() in keep:
+            continue
+        try:
+            if p.is_dir():
+                freed += sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
+                shutil.rmtree(p)
+            else:
+                freed += p.stat().st_size
+                p.unlink()
+        except OSError:
+            pass
+    if freed:
+        print(f'  đã xoá bản llama.cpp cũ / file tải dở: giải phóng {freed / 1e6:.0f} MB')
+
+
 def _llama_prebuilt():
     """Bản prebuilt Ubuntu x64 CUDA 12.8 của llama.cpp + thư viện CUDA đi kèm (cudart / cuBLAS).
     Bản này có PTX cho sm_75 (T4): driver tự biên dịch lúc chạy lần đầu -> cần driver hỗ trợ CUDA >= 12.8."""
@@ -100,9 +135,14 @@ def _llama_prebuilt():
     if drv is None or drv < (12, 8):
         print(f'  driver CUDA {drv}: bản prebuilt (CUDA 12.8) cần driver >= 12.8 -> build từ source')
         return None
-    tag, urls = _llama_release_assets()
+    have = None if LLAMA_RELEASE else _llama_installed()      # chưa ghim tag: dùng bản đã cài, không tải bản mới mỗi lần chạy
     dirs = []
-    for url in urls:
+    if have:
+        tag, dirs = have
+        print(f'  dùng lại llama.cpp {tag} đã cài (không tải lại; đặt LLAMA_RELEASE hoặc xoá work/llama_bin để đổi bản)')
+    else:
+        tag, urls = _llama_release_assets()
+    for url in ([] if have else urls):
         name = url.rsplit('/', 1)[1][:-len('.tar.gz')]
         out = (settings.WORK / 'llama_bin') / name
         if not (out / '.done').exists():
@@ -129,6 +169,7 @@ def _llama_prebuilt():
         print(f'  prebuilt {tag} không thấy GPU CUDA (mã {test.returncode}):\n{log[-2000:]}')
         return None
     print(f'  llama.cpp prebuilt {tag}: {exe}')
+    _llama_prune(dirs)
     return str(exe), env
 
 

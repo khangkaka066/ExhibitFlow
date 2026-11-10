@@ -423,8 +423,8 @@ class PipelineRunner:
             from dashboard import mapgen
             t0 = time.time()
             vp = Path(video)
-            stt = vp.stat()                                    # khoá theo nội dung (size + mtime): video đã phân tích thì dùng lại map
-            out = st.root / 'maps' / f'{vp.stem}_{stt.st_size:x}{stt.st_mtime_ns // 10**6:x}'
+            from exhibitflow.common import video_fingerprint   # khoá theo nội dung video: upload lại cùng video thì dùng lại map
+            out = st.root / 'maps' / f'v{video_fingerprint(vp)}'
             if (out / 'map.png').is_file() and (out / 'map_info.json').is_file():
                 info, src = json.loads((out / 'map_info.json').read_text()), 'cache'
                 st.log('Dùng lại map 2D đã tạo cho video này')

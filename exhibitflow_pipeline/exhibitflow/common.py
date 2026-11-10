@@ -166,6 +166,19 @@ def deep_merge(base, over):
     return out
 
 
+def video_fingerprint(path):
+    """Dấu vân tay theo NỘI DUNG video (kích thước + hash đầu / giữa / cuối file), không phụ thuộc tên hay thời gian sửa.
+    Cache segmentation và map khoá theo đây: tải lên lại cùng video (thời gian sửa đổi) vẫn dùng lại cache, không sinh thêm bản mới."""
+    p = Path(path)
+    size = p.stat().st_size
+    h = hashlib.md5(str(size).encode())
+    with open(p, 'rb') as f:
+        for off in (0, max(0, size // 2 - 524288), max(0, size - 1048576)):
+            f.seek(off)
+            h.update(f.read(1048576))
+    return f'{size:x}{h.hexdigest()[:10]}'
+
+
 def spec_tag(spec):
     return hashlib.md5(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:8]
 
