@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = dict(
     vlm_min_conf=None,
     # --- pipeline ---
     pose_gate_norm_dist=1.5, queue_size=8, max_frames=0, alarm_show_sec=4.0,
+    realtime=False, drop_frames=True,   # realtime: đọc video theo nhịp fps gốc; drop_frames: stage đầu bận thì bỏ frame mới (giữ độ trễ thấp)
     weights_dir='', work_dir='work', use_cpu=False,
     pipeline_mode='full',             # 'tracking' | 'tracking_seg' (+ segmentation hiện vật, phát hiện chạm) | 'full' (+ VLM, cảnh báo)
     scene_mode='auto',                # 'auto' = tách cảnh nhanh (video có đổi camera) | 'first' = 1 cảnh cố định, bỏ qua tách cảnh
@@ -43,7 +44,8 @@ def overrides_from_settings(s):
                max_new_tokens=int(s['vlm_max_new_tokens']), short_json=bool(s['vlm_short_json']))
     ov = dict(models=dict(vlm=vlm),
               rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
-                      alarm_show_sec=float(s['alarm_show_sec'])))
+                      alarm_show_sec=float(s['alarm_show_sec']), realtime=bool(s.get('realtime')),
+                      drop_frames=bool(s.get('drop_frames', True))))
     if s.get('vlm_min_conf') not in (None, ''):
         ov['vlm_min_conf'] = float(s['vlm_min_conf'])
     if s.get('weights_dir'):
