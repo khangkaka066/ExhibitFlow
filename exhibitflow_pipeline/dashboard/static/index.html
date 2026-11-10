@@ -299,7 +299,7 @@ async function poll(){
   if(ST.status==='idle'&&streaming){streaming=false}
   if(ST.status==='idle'&&!streaming&&!PB)$('#vph').innerHTML=mload?'<b>Đang nạp model...</b><br><small>Có thể mất vài phút lần đầu (tải trọng số). Bấm Phân tích khi hiện "Model sẵn sàng".</small>':M.state==='error'?'<b>Lỗi nạp model</b><br><small>'+(M.msg||'')+'</small>':'Model đã sẵn sàng. Chọn video (upload hoặc nhập đường dẫn) rồi bấm <b>Phân tích</b>.';
   if(ST.status==='loading'){$('#vph').style.display='block';$('#vph').innerHTML='<b>'+ST.phase+'</b><br><small>'+(ST.logs.slice(-1)[0]||'')+'</small>'}
-  if(ST.status==='done'&&ST.run&&ST.run!==autoRun){autoRun=ST.run;loadRuns().then(()=>openRun(ST.run))}   // xong -> chuyển sang xem lại (có thanh tua)
+  if(ST.status==='done'&&ST.run&&ST.run!==autoRun){autoRun=ST.run;const rid=ST.run;toast('Xong — chuyển sang xem lại sau 4 giây');loadRuns().then(()=>setTimeout(()=>{if(!PB&&ST.status==='done'&&autoRun===rid)openRun(rid)},ST.alerts&&ST.alerts.length?4000:800))}   // xong -> chuyển sang xem lại (có thanh tua)
   renderAlerts();$('#log').textContent=(ST.logs||[]).join('\n');if(!PB)drawMap(ST.people||[],ST.artifacts||[]);
 }
 function renderAlerts(force){
