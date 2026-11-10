@@ -215,6 +215,8 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <small style="color:var(--mut)">Tắt (mặc định): mỗi stage dùng nhiều luồng, nhanh hơn trên máy từ 8 nhân (đo trên Xeon w3-2435: track 78 → 62 ms). Bật nếu máy chỉ 4 nhân, để các stage khỏi tranh nhau.</small>
       <div class="f chk"><input type="checkbox" id="s-tracker_process"><label>Chạy tracker ở tiến trình riêng (thoát GIL)</label></div>
       <small style="color:var(--mut)">Tracker (ReID + LTC + DMA) là stage nặng mã Python nhất. Tiến trình riêng có GIL riêng nên không bị 6 stage kia làm chậm. Đổi lại thêm ~0.5 GB VRAM và ~3 ms chép ảnh mỗi frame; đổi tuỳ chọn này sẽ nạp lại model.</small>
+      <div class="f chk"><input type="checkbox" id="s-hand_batch"><label>Hand (RTMW): xử lý theo lô (mọi người trong frame cùng lúc)</label></div>
+      <small style="color:var(--mut)">Nhanh hơn khoảng 1.8 lần ở stage hand. Kích thước lô đổi thì onnxruntime chọn thuật toán tính khác nên vài điểm tin cậy thấp (≈1.6% điểm lệch &gt;0.5 px) có thể khác nhẹ so với chạy từng người. Tắt để có kết quả giống hệt bản cũ. Đổi tuỳ chọn này sẽ nạp lại model.</small>
       <div class="f chk"><input type="checkbox" id="s-hand_process"><label>Chạy hand (RTMW) ở tiến trình riêng (thoát GIL)</label></div>
       <small style="color:var(--mut)">Như tracker: stage hand có GIL riêng nên không bị các stage khác làm chậm. Thêm ~0.5 GB VRAM; đổi tuỳ chọn này sẽ nạp lại model.</small>
       <div class="f chk"><input type="checkbox" id="s-realtime"><label>Chế độ real-time (đọc video theo nhịp fps gốc)</label></div>
@@ -440,7 +442,7 @@ async function sys(){try{const s=await api('/api/system');const g=s.gpu&&s.gpu[0
     :gauge('Disk',100*s.disk_used/s.disk_total,Math.round(100*s.disk_used/s.disk_total)+'%',s.disk_used+' / '+s.disk_total+' GB','#f08a24'))}catch{}}
 
 /* ---- settings ---- */
-const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode','pipeline_mode','make_map','vlm_prompt','vlm_system_prompt','realtime','drop_frames','limit_cpu_threads','tracker_process','hand_process'];
+const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode','pipeline_mode','make_map','vlm_prompt','vlm_system_prompt','realtime','drop_frames','limit_cpu_threads','tracker_process','hand_process','hand_batch'];
 let cal={v:[],m:[],H:null,frameImg:null,geo:null};
 async function openSettings(){
   SET=await api('/api/settings');

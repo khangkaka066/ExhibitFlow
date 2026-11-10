@@ -548,9 +548,12 @@ class RTMWHand:
     """RTMW wholebody (rtmlib, onnxruntime) trên crop ảnh gốc quanh track."""
     enabled = True
 
-    def __init__(self, mode='lightweight', device='cuda', require_gpu=False, **_):
+    BUCKETS = (1, 2, 4, 8, 16)       # kích thước lô cố định: onnxruntime CUDA dò thuật toán lại mỗi khi gặp shape mới
+
+    def __init__(self, mode='lightweight', device='cuda', require_gpu=False, batch=True, **_):
         import onnxruntime as ort
         from rtmlib import Wholebody
+        self.batch = bool(batch)         # True: gom crop của mọi người trong frame thành 1 lượt chạy model (nhanh hơn nhiều)
         want_gpu = 'cuda' in str(device)
         if want_gpu and hasattr(ort, 'preload_dlls'):
             try:
@@ -573,9 +576,54 @@ class RTMWHand:
     def warmup(self):
         img = np.zeros((256, 192, 3), np.uint8)
         self.pose_model(img, bboxes=np.array([[0, 0, 192, 256]], np.float32))
+        if self.batch and self._can_batch():          # làm nóng từng mức lô để lần gặp đầu không bị chậm
+            for b in self.BUCKETS:
+                self._infer_batch([(img, [0, 0, 192, 256])] * b)
+
+    def _can_batch(self):
+        pm = self.pose_model
+        return (getattr(pm, 'backend', None) == 'onnxruntime' and getattr(pm, 'session', None) is not None
+                and not getattr(pm, 'to_openpose', False))
+
+    def _infer_batch(self, items):
+        """items: [(crop, bbox_trong_crop)] -> [(kp_all, kc_all)] giống pose_model(crop, bboxes=[bbox]) từng cái một, nhưng chỉ 1 lần
+        session.run cho cả lô (ONNX có trục batch động). Lô được pad lên mức cố định bằng ảnh trắng; các dòng độc lập nhau nên kết
+        quả của dòng thật không đổi."""
+        pm = self.pose_model
+        pre = [pm.preprocess(crop, bbox) for crop, bbox in items]
+        x = np.stack([np.ascontiguousarray(r[0].transpose(2, 0, 1), dtype=np.float32) for r in pre])
+        n = len(pre)
+        b = next((k for k in self.BUCKETS if k >= n), n)
+        if b > n:
+            x = np.concatenate([x, np.zeros((b - n,) + x.shape[1:], np.float32)])
+        sess = pm.session
+        outs = sess.run([o.name for o in sess.get_outputs()], {sess.get_inputs()[0].name: x})
+        res = []
+        for i, (_, center, scale) in enumerate(pre):
+            res.append(pm.postprocess([outs[0][i:i + 1], outs[1][i:i + 1]], center, scale))
+        return res
+
+    def _pose_all(self, items):
+        """Chạy pose cho mọi crop; trả list (kp_all, kc_all) hoặc None nếu crop đó lỗi (giống try/except của vòng lặp từng người)."""
+        if self.batch and self._can_batch():
+            try:
+                out = []
+                for i in range(0, len(items), self.BUCKETS[-1]):
+                    out += self._infer_batch(items[i:i + self.BUCKETS[-1]])
+                return out
+            except Exception:
+                pass                                  # lỗi cả lô -> thử từng người để cô lập crop hỏng
+        out = []
+        for crop, bbox in items:
+            try:
+                out.append(self.pose_model(crop, bboxes=np.array([bbox], dtype=np.float32)))
+            except Exception:
+                out.append(None)
+        return out
 
     def __call__(self, native, recs, S):
         nh, nw = native.shape[:2]
+        work = []
         for rec in recs:
             if rec.get('kp') is None:
                 continue
@@ -590,10 +638,13 @@ class RTMWHand:
                 continue
             crop = native[cy1:cy2, cx1:cx2]
             ch, cw = crop.shape[:2]
-            try:
-                kp_all, kc_all = self.pose_model(crop, bboxes=np.array([bbox or [0, 0, cw, ch]], dtype=np.float32))
-            except Exception:
+            work.append((rec, crop, bbox or [0, 0, cw, ch], cx1, cy1))
+        if not work:
+            return
+        for (rec, _, _, cx1, cy1), res in zip(work, self._pose_all([(w[1], w[2]) for w in work])):
+            if res is None:
                 continue
+            kp_all, kc_all = res
             if kp_all is None or len(kp_all) == 0 or kp_all.shape[1] < 133:
                 continue
             hand_kp, hand_kc, hand_quality = {}, {}, {}
