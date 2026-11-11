@@ -7,7 +7,7 @@ on:
         default: "vastai/pytorch:latest"
   push:
     branches: [Hung]
-    paths: ["exhibitflow_pipeline/**", "Makefile", ".github/workflows/docker-vast.yml"]
+    paths: ["exhibitflow_pipeline/**", "web/**", "Makefile", ".github/workflows/docker-vast.yml"]
 permissions:
   contents: read
   packages: write

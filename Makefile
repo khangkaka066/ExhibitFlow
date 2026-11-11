@@ -6,7 +6,7 @@
 # Biến (đặt trước lệnh make):  MODE=full|tracking_seg|tracking   PORT=8000   LOCAL=1 (máy ít VRAM)
 #                              HF_TOKEN=...   HF_REPO=user/repo   PY=python3
 # Kết quả phân tích lưu ở ./dashboard_data/runs/ (đổi bằng DATA=/đường/dẫn).
-# Lệnh khác:  make logs | status | stop | restart | tunnel | setup | clean
+# Lệnh khác:  make logs | status | stop | restart | setup | clean
 
 SHELL        := /bin/bash
 .DEFAULT_GOAL := run
@@ -37,7 +37,7 @@ export PYTORCH_CUDA_ALLOC_CONF := expandable_segments:True
 TRACKER_URL := https://github.com/khangkaka066/ByteTrack-DMA-LTC-Motion-Tracker.git
 MAP_URL     := https://github.com/khangkaka066/multicam-2d-floorplan-tracker.git
 
-.PHONY: run setup deps externals weights llama mapmodels check url logs status stop restart tunnel clean help
+.PHONY: run setup deps externals weights llama mapmodels check url logs status stop restart clean help
 
 help:
 	@sed -n "2,8p" Makefile | sed "s/^# \{0,1\}//"
@@ -83,7 +83,7 @@ run: setup
 	@if [ -f $(PIDF) ] && kill -0 $$(cat $(PIDF)) 2>/dev/null; then \
 	  echo "[run] dashboard đang chạy (pid $$(cat $(PIDF))). make restart để chạy lại."; \
 	else \
-	  ( cd $(PIPE) && exec $(PY) -m dashboard.server --host 0.0.0.0 --port $(PORT) --mode $(MODE) $(if $(LOCAL),--local) \
+	  ( cd $(PIPE) && exec $(PY) server/web_server.py --host 0.0.0.0 --port $(PORT) --mode $(MODE) $(if $(LOCAL),--local) \
 	      --data-dir $(DATA) ) > $(LOG) 2>&1 & echo $$! > $(PIDF); \
 	  echo "[run] đã chạy nền (pid $$(cat $(PIDF))), mode=$(MODE), port=$(PORT). Log: $(LOG)"; \
 	  echo "[run] kết quả lưu ở: $(DATA)/runs/"; \
@@ -94,8 +94,7 @@ url:
 	@ip="$${PUBLIC_IPADDR:-}"; ext="$${VAST_TCP_PORT_$(PORT):-}"; \
 	echo ""; \
 	if [ -n "$$ip" ] && [ -n "$$ext" ]; then echo ">>> Mở dashboard: http://$$ip:$$ext"; \
-	else echo ">>> Port $(PORT) chưa được mở ra ngoài. Trên Vast: thêm -p $(PORT):$(PORT) vào Docker options của template," ; \
-	     echo "    hoặc chạy:  make tunnel   (link công khai qua Cloudflare, không cần mở port)"; fi; \
+	else echo ">>> Port $(PORT) chưa được mở ra ngoài. Trên Vast: thêm -p $(PORT):$(PORT) vào Docker options của template, rồi mở IP:port hiện trên trang Instances."; fi; \
 	echo "    Lần đầu nạp model mất vài phút (VLM ~6 GB). Theo dõi: make logs"
 
 logs:
@@ -111,9 +110,6 @@ stop:
 
 restart: stop run
 
-# Link công khai qua Cloudflare Tunnel (chạy foreground; dùng trong tmux/screen). Không cần mở port trên Vast.
-tunnel: setup stop
-	cd $(PIPE) && $(PY) -m dashboard.launch --port $(PORT) --mode $(MODE) --data-dir $(DATA)
 
 clean:
 	rm -rf $(STAMP)

@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
 WORKDIR /opt/ExhibitFlow
 COPY Makefile ./Makefile
 COPY exhibitflow_pipeline ./exhibitflow_pipeline
+COPY web ./web
 
 # Dùng lại đúng các target của Makefile (có dấu .make/stamp nên lúc chạy sẽ bỏ qua). Không chạy `check` (cần GPU) và `weights` (tải lúc chạy bằng HF_TOKEN).
 RUN make deps externals llama mapmodels PY=/venv/main/bin/python3 \
