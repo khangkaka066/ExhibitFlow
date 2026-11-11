@@ -34,7 +34,11 @@ def main():
                 if op == 'init':
                     cfg = msg[1]
                     import torch
-                    torch.set_num_threads(int(cfg.get('threads') or 1))
+                    n_thr = int(cfg.get('threads') or 1)
+                    torch.set_num_threads(n_thr)
+                    if n_thr > 1:                  # =1 giữ nguyên mặc định OpenCV như trước; >1 thì OpenCV cũng dùng bấy nhiêu luồng
+                        import cv2
+                        cv2.setNumThreads(n_thr)
                     from pathlib import Path
                     from exhibitflow import settings
                     settings.WEIGHT_ROOTS[:] = [Path(p) for p in cfg['weight_roots']]

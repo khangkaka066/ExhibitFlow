@@ -30,6 +30,8 @@ DEFAULT_SETTINGS = dict(
     limit_cpu_threads=False,            # True: torch / OpenCV chỉ 1 luồng mỗi stage (máy ít nhân như Kaggle 4 vCPU); máy nhiều nhân nên tắt
     hand_batch=True,                    # True: RTMW chạy 1 lượt cho mọi người trong frame (nhanh ~1.8x; vài điểm tin cậy thấp có thể lệch nhẹ so với chạy từng người)
     hand_process=False,                 # True: chạy RTMW hand ở tiến trình riêng (như tracker; +~0.5 GB VRAM)
+    # số luồng CPU (torch + OpenCV) của từng tiến trình riêng; chỉ có tác dụng khi bật *_process tương ứng. Hand: onnxruntime tự chọn luồng riêng
+    tracker_threads=1, hand_threads=1, pose_threads=4,
     pose_process=False,                 # True: chạy YOLOv8-pose ở tiến trình riêng (thoát GIL; +~0.5 GB VRAM, nạp lại model khi đổi)
     tracker_process=False,              # True: chạy tracker ở tiến trình riêng (thoát GIL; +~0.5 GB VRAM, nạp lại model khi đổi)
     realtime=False, drop_frames=True,   # realtime: đọc video theo nhịp fps gốc; drop_frames: stage đầu bận thì bỏ frame mới (giữ độ trễ thấp)
@@ -47,13 +49,17 @@ DEFAULT_SETTINGS = dict(
 def overrides_from_settings(s):
     vlm = dict(n_images=int(s['vlm_n_images']), max_side=int(s['vlm_max_side']),
                max_new_tokens=int(s['vlm_max_new_tokens']), short_json=bool(s['vlm_short_json']))
-    tracker = dict(backend='bytetrack_dma_ltc_proc' if s.get('tracker_process') else 'bytetrack_dma_ltc')
+    tracker = dict(backend='bytetrack_dma_ltc_proc', threads=max(1, int(s.get('tracker_threads') or 1))) if s.get('tracker_process') \
+        else dict(backend='bytetrack_dma_ltc')
     from exhibitflow import settings
     hand = {}
     if settings.MODELS['hand'].get('backend') in ('rtmw', 'rtmw_proc'):      # không đè nếu đã đổi sang backend khác (vd 'none')
-        hand = dict(backend='rtmw_proc' if s.get('hand_process') else 'rtmw', batch=bool(s.get('hand_batch', True)))
-    pose = dict(backend='ultralytics_pose_proc' if s.get('pose_process') else 'ultralytics_pose') \
-        if settings.MODELS['pose'].get('backend') in ('ultralytics_pose', 'ultralytics_pose_proc') else {}
+        hand = dict(backend='rtmw_proc', threads=max(1, int(s.get('hand_threads') or 1))) if s.get('hand_process') else dict(backend='rtmw')
+        hand['batch'] = bool(s.get('hand_batch', True))
+    pose = {}
+    if settings.MODELS['pose'].get('backend') in ('ultralytics_pose', 'ultralytics_pose_proc'):
+        pose = dict(backend='ultralytics_pose_proc', threads=max(1, int(s.get('pose_threads') or 1))) if s.get('pose_process') \
+            else dict(backend='ultralytics_pose')
     ov = dict(models=dict(vlm=vlm, tracker=tracker, pose=pose, hand=hand),
               rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
                       alarm_show_sec=float(s['alarm_show_sec']), realtime=bool(s.get('realtime')),
@@ -66,7 +72,7 @@ def overrides_from_settings(s):
     return ov
 
 
-MODEL_KEYS = ('tracker_process', 'hand_process', 'pose_process', 'hand_batch', 'vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
+MODEL_KEYS = ('tracker_process', 'hand_process', 'pose_process', 'tracker_threads', 'hand_threads', 'pose_threads', 'hand_batch', 'vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
               'use_cpu', 'work_dir')
 
 

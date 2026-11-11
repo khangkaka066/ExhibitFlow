@@ -339,8 +339,8 @@ class RemoteHand(_RemoteProc):
     """RTMW hand ở tiến trình riêng. Giao diện giống RTMWHand (gọi như hàm: hand(native, recs, S))."""
     enabled = True
 
-    def __init__(self, startup_timeout=300, **spec):
-        super().__init__('hand', dict(spec, backend='rtmw'), startup_timeout, 1)
+    def __init__(self, startup_timeout=300, threads=1, **spec):
+        super().__init__('hand', dict(spec, backend='rtmw'), startup_timeout, threads)
 
     def __call__(self, native, recs, S):
         idx = [i for i, r in enumerate(recs) if r.get('kp') is not None]   # chỉ người đã có khung xương mới có bàn tay
@@ -358,8 +358,8 @@ class RemotePose(_RemoteProc):
     """YOLOv8-pose ở tiến trình riêng (thoát GIL: pose cắt ảnh / ghép keypoint bằng Python nên tranh GIL với read / detect / sink).
     Giao diện giống UltralyticsPose (gọi như hàm: pose(native, recs, S)). Chỉ gửi box của từng người, nhận lại kp / kc / pose_crop / pose_box."""
 
-    def __init__(self, startup_timeout=300, **spec):
-        super().__init__('pose', dict(spec, backend='ultralytics_pose'), startup_timeout, 1)
+    def __init__(self, startup_timeout=300, threads=4, **spec):
+        super().__init__('pose', dict(spec, backend='ultralytics_pose'), startup_timeout, threads)
 
     def __call__(self, native, recs, S):
         if not recs:

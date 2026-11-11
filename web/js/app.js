@@ -440,7 +440,8 @@ $('#beOff').onclick=async()=>{API.base='';$('#beUrl').value='';try{localStorage.
 $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
-const PIPE_DEF={tracker_process:true,hand_process:true,pose_process:true,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4};
+const PIPE_DEF={tracker_process:true,hand_process:true,pose_process:true,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
+  tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5};
 const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
 const pipeOpts=()=>({...PIPE});
 Object.keys(PIPE_DEF).forEach(k=>{const el=$('#p-'+k);if(!el)return;
