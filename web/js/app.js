@@ -440,13 +440,13 @@ $('#beOff').onclick=async()=>{API.base='';$('#beUrl').value='';try{localStorage.
 $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
-const PIPE_DEF={tracker_process:false,hand_process:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4};
-const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe')||'{}')}}catch{return{...PIPE_DEF}}})();
+const PIPE_DEF={tracker_process:true,hand_process:true,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4};
+const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
 const pipeOpts=()=>({...PIPE});
 Object.keys(PIPE_DEF).forEach(k=>{const el=$('#p-'+k);if(!el)return;
   if(el.type==='checkbox'){el.checked=!!PIPE[k];el.onchange=()=>{PIPE[k]=el.checked;savePipe()}}
   else{el.value=PIPE[k];el.oninput=()=>{const v=parseFloat(el.value);PIPE[k]=isNaN(v)?PIPE_DEF[k]:v;savePipe()}}});
-function savePipe(){try{localStorage.setItem('ef_pipe',JSON.stringify(PIPE))}catch{}}
+function savePipe(){try{localStorage.setItem('ef_pipe2',JSON.stringify(PIPE))}catch{}}
 function applySourceUI(){
   $('#runBtn').textContent=S.mode==='rt'?'Bắt đầu':'Phân tích';
   $('#vtitle').textContent=S.mode==='rt'?'Video realtime':'Video phân tích'}
