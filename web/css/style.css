@@ -257,7 +257,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
 #modeSel .tg{padding:3px 11px}
 #modeSel.lock{opacity:.5;pointer-events:none}
 
-/* ===== Hàng nguồn theo chế độ + camera ===== */
+/* ===== Hàng nguồn theo chế độ ===== */
 .srcvar{display:flex;gap:8px;flex:1;min-width:0}
 .srcvar[hidden]{display:none}
 .srcvar .txt{flex:1;min-width:0}
@@ -265,10 +265,6 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
 .rtsrc{display:inline-flex;margin-bottom:10px}
 .rtsrc[hidden]{display:none}
 .rtsrc.lock{opacity:.5;pointer-events:none}
-.camlist{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
-.camrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:13px}
-.camrow b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.camrow small{color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ===== Bản đồ 2D luôn nằm cạnh video; cửa sổ hẹp thì thu gọn thanh bên thay vì xếp dọc ===== */
 @media(max-width:1100px){.grid{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr)}}

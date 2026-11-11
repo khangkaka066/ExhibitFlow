@@ -41,16 +41,12 @@
   <div class="grid">
     <div class="col">
       <div class="card">
-        <h3><span id="vtitle">Video phân tích — CAM 1</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
+        <h3><span id="vtitle">Video phân tích</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
         <div class="srcrow">
           <div class="srcvar" id="srcFile">
             <input id="src" class="txt" type="text" placeholder="Đường dẫn file / thư mục (trên server) hoặc URL video (.mp4 ...)" spellcheck="false">
             <input type="file" id="file" accept="video/*" hidden>
             <button class="btn" id="uploadBtn">Upload</button>
-          </div>
-          <div class="srcvar" id="srcCam" hidden>
-            <select id="camSel" class="txt"></select>
-            <input id="camUrl" class="txt" type="text" placeholder="rtsp://user:pass@ip:554/stream" spellcheck="false" hidden>
           </div>
           <button class="btn pri" id="runBtn">Phân tích</button>
           <button class="btn stop" id="stopBtn" disabled>Dừng</button>
@@ -125,13 +121,14 @@
       <p class="note">Web chạy thẳng trên server Vast.ai cùng cổng với API, nên không cần nhập URL: để trống ô trên. Chỉ điền khi mở file web ở máy khác (ví dụ <code>http://IP:PORT</code>). Nút "Mặc định" xoá URL đã lưu.</p>
     </div>
     <div class="card">
-      <h3>Camera (Realtime)</h3>
-      <div class="camlist" id="camList"></div>
-      <div class="opt"><label>Thêm camera</label>
-        <input id="camName" class="txt" placeholder="Tên (vd. CAM 3 · Phòng tranh)" style="margin-bottom:8px">
-        <input id="camAddUrl" class="txt" placeholder="rtsp://user:pass@ip:554/stream" spellcheck="false"></div>
-      <div class="row"><button class="btn pri" id="camAdd">Thêm</button></div>
-      <p class="note">Danh sách lưu trong trình duyệt. Backend hiện <b>chưa đọc được camera trực tiếp</b> (RTSP/RTMP): pipeline mới chỉ đọc file video.</p>
+      <h3>Pipeline (như Settings của dashboard cũ)</h3>
+      <div class="chk"><label><input type="checkbox" id="p-tracker_process"> Tracker chạy ở tiến trình riêng (thoát GIL)</label></div>
+      <div class="chk"><label><input type="checkbox" id="p-hand_process"> Hand (RTMW) chạy ở tiến trình riêng (thoát GIL)</label></div>
+      <div class="chk"><label><input type="checkbox" id="p-hand_batch" checked> Hand (RTMW) xử lý theo lô (nhanh ~1.8x)</label></div>
+      <div class="chk"><label><input type="checkbox" id="p-drop_frames" checked> Realtime: bỏ frame khi pipeline không theo kịp</label></div>
+      <div class="chk"><label><input type="checkbox" id="p-limit_cpu_threads"> Giới hạn 1 luồng CPU mỗi stage (máy ít nhân)</label></div>
+      <div class="opt"><label>Giữ khung đỏ cảnh báo (giây)</label><input type="number" id="p-alarm_show_sec" class="txt" step="0.5" min="0" value="4"></div>
+      <p class="note">Các stage detect, track, pose, hand, VLM luôn chạy song song (pipelining). Hai ô "tiến trình riêng" cộng thêm ~0.5 GB VRAM mỗi ô và nạp lại model khi đổi. <b>Realtime</b> đọc video đúng nhịp fps gốc như camera; <b>Video</b> xử lý mọi frame.</p>
     </div>
     <div class="card">
       <h3>Cấu hình phân tích</h3>

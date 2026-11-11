@@ -55,6 +55,8 @@ STAGES = ['Khởi động & nạp model', 'Tách hiện vật', 'Nạp VLM', 'Ph
 SOURCE_ROOTS = [Path(p).resolve() for p in (os.environ.get('EXHIBITFLOW_SOURCE_ROOTS')
                                             or os.pathsep.join(['/workspace', '/kaggle/input', '/kaggle/working', '/content', str(PROJ)])).split(os.pathsep) if p]
 WEB_DIR = Path(os.environ.get('EXHIBITFLOW_WEB_DIR') or PROJ.parent / 'web')   # giao diện web, phục vụ chung cổng với API
+# Cấu hình pipeline web được phép đặt (khoá + kiểu) = các mục tương ứng trong Settings của dashboard cũ
+PIPE_OPTS = dict(tracker_process=bool, hand_process=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float)
 NW = 960                                   # web vẽ hộp hiện vật theo khung rộng 960 px
 
 
@@ -256,7 +258,8 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         else:
             raise HTTPException(400, 'Cần gửi video hoặc đường dẫn / URL')
         # realtime: đọc đúng nhịp fps như camera, bỏ frame nếu không kịp; theo lô (Video): xử lý mọi frame
-        state.save_settings(dict(realtime=bool(opts.get('realtime'))))
+        pipe = {k: t(opts[k]) for k, t in PIPE_OPTS.items() if opts.get(k) is not None}
+        state.save_settings(dict(pipe, realtime=bool(opts.get('realtime'))))
         try:
             runner.start(str(vpath))
         except RuntimeError as e:
