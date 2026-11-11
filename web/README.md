@@ -1,5 +1,7 @@
 # ExhibitFlow Web Dashboard
 
+> **Hướng dẫn chạy web + backend đầy đủ (demo, Kaggle, Vast.ai): xem [`../WEB_SETUP.md`](../WEB_SETUP.md).** File này là ghi chú chi tiết về giao diện.
+
 Dashboard một trang để chạy pipeline và xem kết quả (cảnh báo, video, map 2D). Thuần HTML/CSS/JS, không cần build.
 
 ## Chạy web
