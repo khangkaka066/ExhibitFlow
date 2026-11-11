@@ -93,11 +93,18 @@ def _performance(ctx, vlm_records):
     fps = (len(fl) - 1) / span if span > 0 else 0.0
     pause_s = sum(e - s for s, e in ctx.pauses)
     inf = [r['infer_s'] for r in vlm_records if r.get('status') == 'ok']
+    from . import prof
+    for m in (ctx.M.tracker, ctx.M.pose, ctx.M.hand):    # kéo bộ đếm thời gian của tiến trình con về
+        if hasattr(m, 'collect_prof'):
+            m.collect_prof()
+    breakdown = prof.summary(len(fl))
+    if breakdown:
+        print(prof.format_table(breakdown), flush=True)
     return dict(
         pipeline_fps=round(fps, 2), vlm_sync_pauses=len(ctx.pauses), vlm_sync_pause_s=round(pause_s, 2), wall_s=round(ctx.wall_s, 2), wall_with_vlm_s=round(ctx.wall_with_vlm_s, 2),
         frames_processed=len(fl), frames_dropped=len(ctx.dropped), e2e_ms=dict(mean=round(float(np.mean(e2e)), 1) if e2e else None,
                                                                               p95=_pct(e2e, 95)),
-        stages=stages,
+        stages=stages, breakdown=breakdown,
         vlm=dict(n_tasks=len(vlm_records), n_ok=len(inf), infer_mean_s=round(float(np.mean(inf)), 3) if inf else None,
                  infer_p95_s=_pct(inf, 95),
                  queue_wait_mean_s=round(float(np.mean([r['queue_wait_s'] for r in vlm_records])), 3) if vlm_records else None),

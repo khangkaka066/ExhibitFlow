@@ -1,5 +1,6 @@
 """Perception theo frame: detector (YOLOX), tracker (ByteTrack-DMA-LTC + ReID), pose (YOLOv8-pose), hand (RTMW)."""
 from .common import *  # noqa: F401,F403
+from .prof import span as _span
 
 
 class Detector:
@@ -75,22 +76,24 @@ class YoloxDetector(Detector):
 
     def detect(self, frame):
         fh, fw = frame.shape[:2]
-        if self.gpu_preproc:
-            x, ratio = self._preprocess_gpu(frame)
-        else:
-            inp, ratio = detector_preprocess(frame, self.exp.test_size)
-            x = torch.from_numpy(inp).unsqueeze(0).to(self.device)
-        with torch.no_grad():
+        with _span('detect.preprocess'):
+            if self.gpu_preproc:
+                x, ratio = self._preprocess_gpu(frame)
+            else:
+                inp, ratio = detector_preprocess(frame, self.exp.test_size)
+                x = torch.from_numpy(inp).unsqueeze(0).to(self.device)
+        with _span('detect.model_nms'), torch.no_grad():     # GPU bất đồng bộ: phần chờ GPU dồn vào detect.to_cpu_post
             dets = self.postprocess(self.model(x.half() if self.half else x), self.exp.num_classes, self.conf, self.nms)[0]
         out = []
-        if dets is not None:
-            for det in dets.float().cpu().numpy():
-                x1, y1, x2, y2, s1, s2, cls = det[:7]
-                if int(cls) != 0:
-                    continue
-                x1, x2 = np.clip([x1 / ratio, x2 / ratio], 0, fw - 1)
-                y1, y2 = np.clip([y1 / ratio, y2 / ratio], 0, fh - 1)
-                out.append([float(x1), float(y1), float(x2), float(y2), float(s1 * s2)])
+        with _span('detect.to_cpu_post'):
+            if dets is not None:
+                for det in dets.float().cpu().numpy():
+                    x1, y1, x2, y2, s1, s2, cls = det[:7]
+                    if int(cls) != 0:
+                        continue
+                    x1, x2 = np.clip([x1 / ratio, x2 / ratio], 0, fw - 1)
+                    y1, y2 = np.clip([y1 / ratio, y2 / ratio], 0, fh - 1)
+                    out.append([float(x1), float(y1), float(x2), float(y2), float(s1 * s2)])
         return out
 
 
@@ -203,7 +206,8 @@ class ByteTrackDMALTC:
         fh, fw = img.shape[:2]
         arr = np.array(dets, np.float32).reshape(-1, 5) if dets else np.empty((0, 5), np.float32)
         arr[:, :4] *= s
-        online = self.tracker.update(arr, (fh, fw), (fh, fw), frame=img)
+        with _span('track.update'):                       # ReID + LTC + DMA + gán ID
+            online = self.tracker.update(arr, (fh, fw), (fh, fw), frame=img)
         keep = []
         for t in online:
             w, h = t.tlwh[2], t.tlwh[3]
@@ -226,7 +230,7 @@ class _RemoteProc:
         import tempfile
         import threading
         from multiprocessing.connection import Listener
-        self._lock, self._shm, self._closed = threading.Lock(), None, False
+        self._lock, self._shm, self._closed, self._kind = threading.Lock(), None, False, kind
         self._dir = tempfile.mkdtemp(prefix='ef_proc_')
         key = secrets.token_bytes(16)
         addr = os.path.join(self._dir, 'w.sock')
@@ -264,12 +268,16 @@ class _RemoteProc:
                 raise RuntimeError('Tiến trình con đã đóng')
             self.conn.send(msg)
             t0 = time.perf_counter()
+            _t_rpc = t0
             while not self.conn.poll(1.0):
                 if self.proc.poll() is not None:
                     raise RuntimeError(f'Tiến trình con đã chết (mã {self.proc.returncode})')
                 if time.perf_counter() - t0 > timeout:
                     raise TimeoutError(f'Tiến trình con không trả lời sau {timeout}s')
             status, val = self.conn.recv()
+        if msg[0] not in ('prof', 'shm', 'init', 'quit'):
+            from .prof import add
+            add(f'{self._kind}.rpc_roundtrip', time.perf_counter() - _t_rpc)   # gửi + đợi worker + nhận (gồm thời gian worker tính)
         if status == 'err':
             raise RuntimeError('Lỗi trong tiến trình con:\n' + val)
         return val
@@ -277,6 +285,7 @@ class _RemoteProc:
     def _put_image(self, img):
         """Chép ảnh vào vùng nhớ chung (cấp lại khi ảnh lớn hơn); trả shape."""
         from multiprocessing import shared_memory
+        _t_cp = time.perf_counter()
         img = np.ascontiguousarray(img)
         if self._shm is None or self._shm.size < img.nbytes:
             old = self._shm
@@ -286,7 +295,23 @@ class _RemoteProc:
                 old.close()
                 old.unlink()
         np.ndarray(img.shape, img.dtype, buffer=self._shm.buf)[...] = img
+        from .prof import add
+        add(f'{self._kind}.shm_copy', time.perf_counter() - _t_cp)
         return img.shape
+
+    def reset_prof(self):
+        try:
+            self._call(('prof',), timeout=10)
+        except Exception:
+            pass
+
+    def collect_prof(self):
+        """Lấy bộ đếm thời gian của tiến trình con về tiến trình chính (cuối video)."""
+        from .prof import merge
+        try:
+            merge(self._call(('prof',), timeout=10))
+        except Exception:
+            pass
 
     def close(self):
         if self._closed:
@@ -484,7 +509,8 @@ class UltralyticsPose:
         self.wide = CFG['pose_wide_retry'] if wide_retry is None else wide_retry
 
     def _predict(self, crops):
-        return self.model(crops, verbose=False, device=self.device)
+        with _span('pose.predict'):                      # tiền xử lý Ultralytics (CPU) + suy luận + NMS; .cpu() ở sau mới chờ GPU xong
+            return self.model(crops, verbose=False, device=self.device)
 
     def warmup(self):
         for _ in range(2):
@@ -516,6 +542,10 @@ class UltralyticsPose:
         return kps[best], kcs[best], [wx1, wy1, wx2, wy2], pb.tolist()
 
     def __call__(self, native, recs, S):
+        with _span('pose.call'):
+            self._run(native, recs, S)
+
+    def _run(self, native, recs, S):
         nh, nw = native.shape[:2]
         jobs = []
         for rec in recs:
@@ -543,7 +573,8 @@ class UltralyticsPose:
             kc = res.keypoints.conf[best_j].cpu().numpy() if res.keypoints.conf is not None else np.ones(len(kp))
             kp_native = kp + np.array([cx1, cy1])
             if self.wide and arm_leaves_crop(kp, kc, (cx1, cy1, cx2, cy2), nw):
-                wide = self._wide_retry(native, rec, kp_native, kc, S)
+                with _span('pose.wide_retry'):
+                    wide = self._wide_retry(native, rec, kp_native, kc, S)
                 if wide is not None:
                     kp_native, kc, rec['pose_crop'], rec['pose_box'] = wide
             rec['kp'] = (kp_native / S).tolist()
@@ -639,6 +670,10 @@ class RTMWHand:
         return out
 
     def __call__(self, native, recs, S):
+        with _span('hand.call'):
+            self._run(native, recs, S)
+
+    def _run(self, native, recs, S):
         nh, nw = native.shape[:2]
         work = []
         for rec in recs:

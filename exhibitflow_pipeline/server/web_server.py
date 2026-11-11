@@ -194,9 +194,32 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def get_state():
         return state.snapshot()
 
+    def cpu_cores():
+        """Số nhân mà tiến trình thực sự dùng được: min(affinity, hạn mức cgroup). Container Vast: os.cpu_count() thường báo cả máy chủ."""
+        info = {'logical': os.cpu_count() or 1}
+        try:
+            info['usable'] = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            info['usable'] = info['logical']
+        quota = None
+        try:
+            q, per = open('/sys/fs/cgroup/cpu.max').read().split()[:2]          # cgroup v2: "<quota> <period>" hoặc "max <period>"
+            quota = None if q == 'max' else int(q) / int(per)
+        except Exception:                      # noqa: BLE001
+            try:                               # cgroup v1
+                q = int(open('/sys/fs/cgroup/cpu/cpu.cfs_quota_us').read())
+                per = int(open('/sys/fs/cgroup/cpu/cpu.cfs_period_us').read())
+                quota = q / per if q > 0 else None
+            except Exception:                  # noqa: BLE001
+                pass
+        if quota:
+            info['quota'] = round(quota, 1)
+            info['usable'] = max(1, min(info['usable'], int(quota)))
+        return info
+
     @app.get('/api/system')
     def system():
-        out = {'cpu': None, 'ram': None, 'gpus': []}
+        out = {'cpu': None, 'ram': None, 'gpus': [], 'cores': cpu_cores()}
         try:
             la, n = os.getloadavg(), os.cpu_count() or 1
             out['cpu'] = {'load': round(la[0], 2), 'pct': round(min(100.0, la[0] / n * 100), 1)}

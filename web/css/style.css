@@ -453,3 +453,5 @@ html,body{color:var(--text)}
 @media(prefers-reduced-motion:reduce){.wm-main{animation:none}}
 .top .chip,.top .btn{white-space:nowrap}
 @media(max-width:1000px){.wm-sub{display:none}.wm-main{font-size:32px}}
+
+.note.err{color:#E5524A}

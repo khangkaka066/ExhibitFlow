@@ -382,6 +382,11 @@ def run_video(exp, key, d, M, vlm, art, mode='parallel', rt=None):
     rt = rt or RT
     ctx = VideoRun(exp, key, d, M, vlm, mode, rt, art)
     M.tracker.reset(ctx.fps)
+    from . import prof
+    prof.reset()
+    for m in (M.tracker, M.pose, M.hand):                # đặt lại bộ đếm thời gian (cả ở tiến trình con)
+        if hasattr(m, 'reset_prof'):
+            m.reset_prof()
     for i in range(settings.N_GPU):
         reset_peak_mem(i)
     seq = mode == 'sequential'

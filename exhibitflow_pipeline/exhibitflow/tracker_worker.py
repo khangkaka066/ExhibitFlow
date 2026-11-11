@@ -75,6 +75,9 @@ def main():
                     model(img, recs, s)
                     keys = ('kp', 'kc', 'pose_crop', 'pose_box')
                     conn.send(('ok', [{k: r[k] for k in keys if k in r} if 'kp' in r else None for r in recs]))
+                elif op == 'prof':
+                    from exhibitflow.prof import take
+                    conn.send(('ok', take()))
                 elif op == 'quit':
                     conn.send(('ok', None))
                     break

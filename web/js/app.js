@@ -417,7 +417,7 @@ $('#stopBtn').onclick=()=>{S.cancel=true;logLine('Đang dừng…')};
 function setView(v){['dash','set'].forEach(k=>$('#v-'+k).hidden=k!==v);$$('#tabs .tab').forEach(b=>b.classList.toggle('on',b.dataset.view===v))}
 $('#tabs').onclick=e=>{const b=e.target.closest('[data-view]');if(b)setView(b.dataset.view)};
 $('#beChip').onclick=()=>setView('set');
-$('#refreshBtn').onclick=()=>API.ping();
+$('#refreshBtn').onclick=()=>API.ping().then(loadCores);
 $('#play').onclick=()=>{if(S.t>=D-.05)seek(0);setPlaying(!S.playing)};
 $('#speed').onchange=e=>{S.speed=+e.target.value;vid.playbackRate=S.speed};
 $('#layers').onclick=e=>{const b=e.target.closest('[data-l]');if(!b)return;S.layers[b.dataset.l]=!S.layers[b.dataset.l];b.classList.toggle('on')};
@@ -446,8 +446,28 @@ const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_p
 const pipeOpts=()=>({...PIPE});
 Object.keys(PIPE_DEF).forEach(k=>{const el=$('#p-'+k);if(!el)return;
   if(el.type==='checkbox'){el.checked=!!PIPE[k];el.onchange=()=>{PIPE[k]=el.checked;savePipe()}}
-  else{el.value=PIPE[k];el.oninput=()=>{const v=parseFloat(el.value);PIPE[k]=isNaN(v)?PIPE_DEF[k]:v;savePipe()}}});
+  else{el.value=PIPE[k];el.oninput=()=>{let v=parseFloat(el.value);
+    if(k.endsWith('_threads')&&!isNaN(v)&&CORES.n)v=Math.min(Math.max(1,Math.round(v)),CORES.n); /* không cho vượt số nhân khả dụng */
+    PIPE[k]=isNaN(v)?PIPE_DEF[k]:v;savePipe();checkThreads()}}});
+Object.keys(PIPE_DEF).forEach(k=>{if(k.endsWith('_process'))$('#p-'+k).addEventListener('change',checkThreads)});
 function savePipe(){try{localStorage.setItem('ef_pipe2',JSON.stringify(PIPE))}catch{}}
+/* Số nhân CPU khả dụng của server (đã trừ hạn mức container) để chỉnh số luồng cho hợp lý */
+const CORES={n:0,logical:0,quota:0};
+function checkThreads(){
+  const w=$('#coreWarn');if(!w||!CORES.n)return;
+  const used=(PIPE.tracker_process?PIPE.tracker_threads:0)+(PIPE.hand_process?PIPE.hand_threads:0)+(PIPE.pose_process?PIPE.pose_threads:0);
+  const procs=['tracker','hand','pose'].filter(k=>PIPE[k+'_process']).length;
+  /* tiến trình chính + llama-server + tiến trình riêng luôn cần thêm nhân: đừng đặt tổng luồng quá ~1/2 số nhân */
+  const cap=Math.max(1,Math.floor(CORES.n/2));
+  w.hidden=false;
+  w.className='note'+(used>cap?' err':'');
+  w.textContent=`Tổng luồng đang đặt cho ${procs} tiến trình riêng: ${used} / ${CORES.n} nhân.`+(used>cap?` Cao hơn ~1/2 số nhân: các stage sẽ tranh CPU với nhau, nên giảm bớt.`:' Hợp lý.')}
+async function loadCores(){
+  try{const c=(await API.system()).cores||{};CORES.n=c.usable||c.logical||0;CORES.logical=c.logical||0;CORES.quota=c.quota||0;
+    const el=$('#coreInfo');if(!el||!CORES.n)return;
+    el.textContent=`CPU khả dụng: ${CORES.n} nhân`+(c.logical&&c.logical!==CORES.n?` (máy chủ báo ${c.logical}`+(c.quota?`, hạn mức container ${c.quota}`:'')+')':'')+'. Số luồng mỗi tiến trình không được vượt số này.';
+    ['tracker','hand','pose'].forEach(k=>{const el2=$('#p-'+k+'_threads');if(el2){el2.max=CORES.n;if(+el2.value>CORES.n){el2.value=CORES.n;PIPE[k+'_threads']=CORES.n;savePipe()}}});
+    checkThreads()}catch{}}
 function applySourceUI(){
   $('#runBtn').textContent=S.mode==='rt'?'Bắt đầu':'Phân tích';
   $('#vtitle').textContent=S.mode==='rt'?'Video realtime':'Video phân tích'}
@@ -457,7 +477,7 @@ resetData();renderSystem();setStatus('Chưa chạy');setMode(S.mode);
 logLine('Sẵn sàng.'+(CFG.demo?' Chế độ demo: chưa kết nối backend thì kết quả là dữ liệu mẫu.':''));
 setInterval(()=>{$('#clock').textContent=new Date().toLocaleString('vi-VN')},1000);$('#clock').textContent=new Date().toLocaleString('vi-VN');
 setInterval(pollSystem,3000);
-API.ping();requestAnimationFrame(tick);
+API.ping().then(loadCores);requestAnimationFrame(tick);
 
 /* ---------- Ngăn kéo menu ---------- */
 (()=>{const app=$('.app'),btn=$('#menuBtn'),scrim=$('#scrim');
