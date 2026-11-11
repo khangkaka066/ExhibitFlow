@@ -2,6 +2,7 @@
 #
 #   git clone -b Hung https://github.com/khangkaka066/ExhibitFlow.git && cd ExhibitFlow
 #   HF_TOKEN=hf_xxx make            # cài tất cả, chạy nền, in link truy cập
+#   HF_TOKEN=hf_xxx make vast       # như trên cho Vast.ai: cache HF ở /workspace, bật tải nhanh, chạy lại nếu đang chạy
 #
 # Biến (đặt trước lệnh make):  MODE=full|tracking_seg|tracking   PORT=8000   LOCAL=1 (máy ít VRAM)
 #                              HF_TOKEN=...   HF_REPO=user/repo   PY=python3
@@ -37,7 +38,7 @@ export PYTORCH_CUDA_ALLOC_CONF := expandable_segments:True
 TRACKER_URL := https://github.com/khangkaka066/ByteTrack-DMA-LTC-Motion-Tracker.git
 MAP_URL     := https://github.com/khangkaka066/multicam-2d-floorplan-tracker.git
 
-.PHONY: run setup deps externals weights llama mapmodels check url logs status stop restart clean help
+.PHONY: vast run setup deps externals weights llama mapmodels check url logs status stop restart clean help
 
 help:
 	@sed -n "2,8p" Makefile | sed "s/^# \{0,1\}//"
@@ -78,6 +79,11 @@ $(STAMP)/mapmodels:
 	@touch $@
 
 ## ---------------- chạy ----------------
+# Vast.ai: sau git clone chỉ cần `HF_TOKEN=hf_xxx make vast`. Cache HF đặt ở /workspace (bền, không đầy đĩa container), bật tải nhanh,
+# cài (nếu chưa), dừng server cũ nếu có rồi chạy lại. Đặt sẵn HF_HOME / HF_XET_HIGH_PERFORMANCE thì giữ giá trị của bạn.
+vast: export HF_HOME ?= /workspace/.hf_home
+vast: export HF_XET_HIGH_PERFORMANCE ?= 1
+vast: restart
 run: setup
 	@mkdir -p $(DATA)
 	@if [ -f $(PIDF) ] && kill -0 $$(cat $(PIDF)) 2>/dev/null; then \
