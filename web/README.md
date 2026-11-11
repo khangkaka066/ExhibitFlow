@@ -90,8 +90,6 @@ Lưu ý:
 
 Thử không cần GPU (dữ liệu giả của dashboard): `python exhibitflow_pipeline/server/web_server.py --port 8000 --demo`.
 
-(`server/server.py` là bản server cũ chạy `main.py` cho từng video, nạp lại model mỗi lần; giữ để tham khảo.)
-
 ## Cấu trúc
 
 ```
@@ -103,11 +101,12 @@ web/
    ├─ app.js       dữ liệu mẫu, chuyển result.json, vẽ video / map, nối backend, bảng cảnh báo
    └─ hex.js       họa tiết lục giác nền
 exhibitflow_pipeline/
-├─ server/server.py                           API FastAPI bọc main.py
+├─ server/web_server.py                       backend nối web với engine của dashboard
+├─ server/web_launch.py                       chạy backend + mở URL cloudflared
 └─ notebooks/exhibitflow_kaggle_server.ipynb  notebook Kaggle (server + đường hầm)
 ```
 
-Sửa `server/server.py` xong, tạo lại notebook để hai bản khớp (notebook nhúng bản copy của file này).
+Notebook không nhúng mã server: nó clone repo rồi chạy `server/web_launch.py`.
 
 ## API (server ↔ web)
 

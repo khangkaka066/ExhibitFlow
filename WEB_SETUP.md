@@ -19,7 +19,6 @@ Giao diện web (thư mục `web/`) gửi video lên **backend** chạy engine c
 | `exhibitflow_pipeline/server/web_server.py` | Backend nối web với engine của dashboard (`State`, `PipelineRunner`). Không sửa file nào của `dashboard/`. |
 | `exhibitflow_pipeline/server/web_launch.py` | Chạy `web_server.py` + mở URL công khai (cloudflared), in URL để dán vào web. |
 | `exhibitflow_pipeline/notebooks/exhibitflow_kaggle_server.ipynb` | Notebook Kaggle: clone, cài thư viện, tìm trọng số, chạy backend. |
-| `exhibitflow_pipeline/server/server.py` | Bản server cũ (chạy `main.py` cho từng video). Chỉ để tham khảo, không cần. |
 
 ## Cách 1: Thử nhanh không cần GPU (dữ liệu giả)
 
