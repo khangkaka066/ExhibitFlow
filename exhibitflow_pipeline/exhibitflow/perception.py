@@ -152,6 +152,27 @@ def _single_thread_gbm(tracker):
     booster.predict, booster._ef_single_thread = predict, True
 
 
+def _wrap_span(obj, attr, name):
+    """Bọc obj.attr bằng đo thời gian (không sửa repo tracker bên ngoài). Bọc 1 lần cho mỗi đối tượng."""
+    fn = getattr(obj, attr, None)
+    if fn is None or getattr(fn, '_ef_prof', False):
+        return
+
+    def wrapped(*a, **k):
+        with _span(name):
+            return fn(*a, **k)
+    wrapped._ef_prof = True
+    setattr(obj, attr, wrapped)
+
+
+def _profile_tracker(tr):
+    """Chia nhỏ track.update: ReID (cắt ảnh người + OSNet), DMA fuse (GBM), LTC refine (motion), Kalman multi_predict."""
+    _wrap_span(getattr(tr, 'reid_extractor', None), 'extract', 'track.reid_extract')
+    _wrap_span(getattr(tr, 'dma', None), 'fuse', 'track.dma_fuse')
+    _wrap_span(getattr(tr, 'motion_predictor', None), 'refine', 'track.ltc_refine')
+    _wrap_span(tr, '_fuse_reid', 'track.fuse_reid_total')          # gồm embedding_distance + dma_fuse
+
+
 @register('tracker', 'bytetrack_dma_ltc')
 class ByteTrackDMALTC:
     """Tham số mặc định = `make track-video-full-torch` (tools/track_video_bench.py)."""
@@ -194,6 +215,7 @@ class ByteTrackDMALTC:
         BaseTrack._count = 0
         self.tracker = BYTETracker(self.args, frame_rate=int(round(fps)))
         _single_thread_gbm(self.tracker)
+        _profile_tracker(self.tracker)
         for name, ok in (('DMA GBM', getattr(self.tracker, 'dma', None) is not None),
                          ('LTC motion', getattr(getattr(self.tracker, 'motion_predictor', None), 'enabled', False)),
                          ('ReID', getattr(self.tracker, 'reid_extractor', None) is not None or not self.args.with_reid)):
@@ -510,7 +532,12 @@ class UltralyticsPose:
 
     def _predict(self, crops):
         with _span('pose.predict'):                      # tiền xử lý Ultralytics (CPU) + suy luận + NMS; .cpu() ở sau mới chờ GPU xong
-            return self.model(crops, verbose=False, device=self.device)
+            res = self.model(crops, verbose=False, device=self.device)
+        from .prof import add                            # Ultralytics tự đo từng ảnh: speed = {preprocess, inference, postprocess} (ms)
+        for r in res:
+            for k, v in (getattr(r, 'speed', None) or {}).items():
+                add(f'pose.ultra_{k}', float(v) / 1000.0)
+        return res
 
     def warmup(self):
         for _ in range(2):
