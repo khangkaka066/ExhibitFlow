@@ -37,15 +37,15 @@ _UV = _find_uv()
 print('[deps] trình cài:', ' '.join(_UV) + ' pip' if _UV else 'pip', flush=True)
 GPU_PKG = 'onnxruntime' if cpu else 'onnxruntime-gpu[cuda,cudnn]'
 # 1 lần cài duy nhất: gồm cả onnxruntime-gpu để trình cài không kéo thêm bản CPU (rtmlib phụ thuộc `onnxruntime`)
-pip('install', '-q', '-r', str(ROOT / 'requirements.txt'), GPU_PKG)
+pip('install', '-r', str(ROOT / 'requirements.txt'), GPU_PKG)
 if not cpu:
     # rtmlib vẫn có thể đã cài kèm bản CPU: 2 gói dùng chung thư mục, bản CPU che mất bản GPU -> gỡ, rồi khôi phục file của bản GPU
     from importlib import metadata
     if any((d.metadata['Name'] or '').lower() == 'onnxruntime' for d in metadata.distributions()):
         if _UV:
             pip('uninstall', '-q', 'onnxruntime', check=False)
-            pip('install', '-q', '--reinstall', '--no-deps', 'onnxruntime-gpu')
+            pip('install', '--reinstall', '--no-deps', 'onnxruntime-gpu')
         else:
             pip('uninstall', '-y', '-q', 'onnxruntime', check=False)
-            pip('install', '-q', '--force-reinstall', '--no-deps', 'onnxruntime-gpu')
+            pip('install', '--force-reinstall', '--no-deps', 'onnxruntime-gpu')
 print('Xong. Kiểm tra: python main.py --check')

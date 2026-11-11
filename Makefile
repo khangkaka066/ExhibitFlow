@@ -53,9 +53,9 @@ check:
 deps: $(STAMP)/deps
 $(STAMP)/deps:
 	@mkdir -p $(STAMP)
-	$(PY) -m pip install -q fastapi "uvicorn[standard]" python-multipart psutil
+	$(PY) -m pip install fastapi "uvicorn[standard]" python-multipart psutil
 	cd $(PIPE) && $(PY) scripts/install_deps.py
-	$(PY) -m pip install -q -U "brotli>=1.2"
+	$(PY) -m pip install -U "brotli>=1.2"
 	@touch $@
 
 externals: $(EXT)/ByteTrack-DMA-LTC-Motion-Tracker $(EXT)/multicam-2d-floorplan-tracker
