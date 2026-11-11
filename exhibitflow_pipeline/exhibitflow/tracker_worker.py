@@ -1,8 +1,8 @@
-"""Tiến trình con chạy 1 model nặng mã Python (tracker ByteTrack-DMA-LTC hoặc RTMW hand) riêng, để stage tương ứng thoát GIL
+"""Tiến trình con chạy 1 model nặng mã Python (tracker ByteTrack-DMA-LTC, RTMW hand hoặc YOLOv8-pose) riêng, để stage tương ứng thoát GIL
 của tiến trình chính.
 
 Chạy bởi _RemoteProc (perception.py):  python -m exhibitflow.tracker_worker <địa chỉ socket>  (khoá xác thực qua EF_TRK_KEY).
-Giao thức (request -> reply, đồng bộ từng lần): init / shm / reset / upd (tracker) / hand / quit. Ảnh đi qua shared memory, không qua pickle.
+Giao thức (request -> reply, đồng bộ từng lần): init / shm / reset / upd (tracker) / hand / pose / quit. Ảnh đi qua shared memory, không qua pickle.
 """
 import os
 import sys
@@ -64,6 +64,13 @@ def main():
                     model(img, recs, s)
                     keys = ('hand_kp', 'hand_kc', 'hand_quality')
                     conn.send(('ok', [{k: r[k] for k in keys} if 'hand_kp' in r else None for r in recs]))
+                elif op == 'pose':
+                    _, shape, boxes, s = msg
+                    img = np.ndarray(shape, np.uint8, buffer=shm.buf)
+                    recs = [dict(box=b) for b in boxes]
+                    model(img, recs, s)
+                    keys = ('kp', 'kc', 'pose_crop', 'pose_box')
+                    conn.send(('ok', [{k: r[k] for k in keys if k in r} if 'kp' in r else None for r in recs]))
                 elif op == 'quit':
                     conn.send(('ok', None))
                     break

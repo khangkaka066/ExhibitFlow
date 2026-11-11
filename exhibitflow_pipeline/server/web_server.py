@@ -56,7 +56,7 @@ SOURCE_ROOTS = [Path(p).resolve() for p in (os.environ.get('EXHIBITFLOW_SOURCE_R
                                             or os.pathsep.join(['/workspace', '/kaggle/input', '/kaggle/working', '/content', str(PROJ)])).split(os.pathsep) if p]
 WEB_DIR = Path(os.environ.get('EXHIBITFLOW_WEB_DIR') or PROJ.parent / 'web')   # giao diện web, phục vụ chung cổng với API
 # Cấu hình pipeline web được phép đặt (khoá + kiểu) = các mục tương ứng trong Settings của dashboard cũ
-PIPE_OPTS = dict(tracker_process=bool, hand_process=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float)
+PIPE_OPTS = dict(tracker_process=bool, hand_process=bool, pose_process=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float)
 NW = 960                                   # web vẽ hộp hiện vật theo khung rộng 960 px
 
 
@@ -66,7 +66,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     if mode:
         state.save_settings(dict(pipeline_mode=mode))
     # mặc định bật khi khởi động (preload nạp model đúng cấu hình ngay, không phải nạp lại ở lần chạy đầu); web gửi lại mỗi lần chạy
-    state.save_settings(dict(tracker_process=True, hand_process=True, hand_batch=True, drop_frames=True))
+    state.save_settings(dict(tracker_process=True, hand_process=True, pose_process=True, hand_batch=True, drop_frames=True))
     if not demo and os.environ.get('EXHIBITFLOW_SAVE_VIDEO', '1') != '0':
         # Engine.run đặt RT['render_live']=False trước mỗi lần chạy, nên bật lại ngay trước run_video (không sửa file của Hưng):
         # engine ghi live.mp4 (video đã vẽ khung người / hiện vật) để web xem lại sau khi chạy xong.

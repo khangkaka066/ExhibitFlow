@@ -213,7 +213,7 @@ class ByteTrackDMALTC:
 
 
 class _RemoteProc:
-    """Chạy 1 model (tracker / hand) trong TIẾN TRÌNH RIÊNG (exhibitflow/tracker_worker.py). Các stage track / hand là phần nặng mã
+    """Chạy 1 model (tracker / hand / pose) trong TIẾN TRÌNH RIÊNG (exhibitflow/tracker_worker.py). Các stage track / hand là phần nặng mã
     Python nhỏ (nhiều kernel / lời gọi nhỏ phát từ CPU): trong cùng tiến trình chúng tranh GIL với các stage còn lại. Tiến trình riêng
     có GIL riêng nên không bị các stage kia làm chậm (và ngược lại). Đổi lại: thêm 1 CUDA context (~0.5 GB VRAM) và vài ms chép ảnh
     qua shared memory mỗi frame."""
@@ -351,6 +351,23 @@ class RemoteHand(_RemoteProc):
         for i, res in zip(idx, self._call(('hand', shape, small, float(S)))):
             if res:
                 recs[i].update(res)
+
+
+@register('pose', 'ultralytics_pose_proc')
+class RemotePose(_RemoteProc):
+    """YOLOv8-pose ở tiến trình riêng (thoát GIL: pose cắt ảnh / ghép keypoint bằng Python nên tranh GIL với read / detect / sink).
+    Giao diện giống UltralyticsPose (gọi như hàm: pose(native, recs, S)). Chỉ gửi box của từng người, nhận lại kp / kc / pose_crop / pose_box."""
+
+    def __init__(self, startup_timeout=300, **spec):
+        super().__init__('pose', dict(spec, backend='ultralytics_pose'), startup_timeout, 1)
+
+    def __call__(self, native, recs, S):
+        if not recs:
+            return
+        shape = self._put_image(native)
+        for rec, res in zip(recs, self._call(('pose', shape, [list(map(float, r['box'])) for r in recs], float(S)))):
+            if res:
+                rec.update(res)
 
 
 class _UltralyticsTracker:

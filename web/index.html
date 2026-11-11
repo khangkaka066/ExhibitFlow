@@ -124,11 +124,12 @@
       <h3>Pipeline (như Settings của dashboard cũ)</h3>
       <div class="chk"><label><input type="checkbox" id="p-tracker_process" checked> Tracker chạy ở tiến trình riêng (thoát GIL)</label></div>
       <div class="chk"><label><input type="checkbox" id="p-hand_process" checked> Hand (RTMW) chạy ở tiến trình riêng (thoát GIL)</label></div>
+      <div class="chk"><label><input type="checkbox" id="p-pose_process" checked> Pose (YOLOv8) chạy ở tiến trình riêng (thoát GIL)</label></div>
       <div class="chk"><label><input type="checkbox" id="p-hand_batch" checked> Hand (RTMW) xử lý theo lô (nhanh ~1.8x)</label></div>
       <div class="chk"><label><input type="checkbox" id="p-drop_frames" checked> Realtime: bỏ frame khi pipeline không theo kịp</label></div>
       <div class="chk"><label><input type="checkbox" id="p-limit_cpu_threads"> Giới hạn 1 luồng CPU mỗi stage (máy ít nhân)</label></div>
       <div class="opt"><label>Giữ khung đỏ cảnh báo (giây)</label><input type="number" id="p-alarm_show_sec" class="txt" step="0.5" min="0" value="4"></div>
-      <p class="note">Các stage detect, track, pose, hand, VLM luôn chạy song song (pipelining). Hai ô "tiến trình riêng" cộng thêm ~0.5 GB VRAM mỗi ô và nạp lại model khi đổi. <b>Realtime</b> đọc video đúng nhịp fps gốc như camera; <b>Video</b> xử lý mọi frame.</p>
+      <p class="note">Các stage detect, track, pose, hand, VLM luôn chạy song song (pipelining). Ba ô "tiến trình riêng" cộng thêm ~0.5 GB VRAM mỗi ô và nạp lại model khi đổi. <b>Realtime</b> đọc video đúng nhịp fps gốc như camera; <b>Video</b> xử lý mọi frame.</p>
     </div>
     <div class="card">
       <h3>Cấu hình phân tích</h3>
