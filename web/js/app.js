@@ -355,9 +355,15 @@ async function runRealtime(src){
   const id=await API.start(fd);S.jobId=id;
   prepareLiveView(S.file?S.file.name:src);LIVE={id,after:0,meta:null,banner:null};const mine=LIVE;
   let stop=false;const img=$('#liveimg');
+  /* Luồng MJPEG: server đẩy từng khung ngay khi có (như dashboard cũ). Poll từng khung + sleep(120ms) chỉ được ~5-8 khung/s nên nhìn bị trễ. */
+  let streamFailed=false;
+  img.onerror=()=>{streamFailed=true};
+  img.src=API.base+`/api/jobs/${id}/live/stream?`+Date.now();
   const frames=(async()=>{while(!stop&&LIVE===mine){
-    try{const u=await API.blob(id,'live');if(u&&LIVE===mine){const old=img.src;img.src=u;if(old&&old.startsWith('blob:'))URL.revokeObjectURL(old)}}catch{}
-    await sleep(120)}})();
+    if(streamFailed){   /* dự phòng: luồng không chạy được (proxy chặn...) thì poll từng khung như trước */
+      try{const u=await API.blob(id,'live');if(u&&LIVE===mine){const old=img.src;img.src=u;if(old&&old.startsWith('blob:'))URL.revokeObjectURL(old)}}catch{}
+      await sleep(60)}
+    else await sleep(200)}})();
   const seen=new Set();let key=null;
   try{for(;;){
     if(S.cancel){await API.cancel(id);stop=true;LIVE=null;return stopped()}

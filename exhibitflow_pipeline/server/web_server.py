@@ -44,7 +44,7 @@ sys.path.insert(0, str(PROJ))
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, Response  # noqa: E402
+from fastapi.responses import FileResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
@@ -327,6 +327,28 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         if jpg is None:
             raise HTTPException(404, 'Chưa có khung hình')
         return Response(jpg, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/jobs/{jid}/live/stream')
+    async def live_stream(jid: str):
+        """MJPEG (multipart/x-mixed-replace) như /api/stream của dashboard cũ: server đẩy mỗi khung mới ngay khi có, không bị trễ do web poll.
+        Kết thúc khi pipeline xong và không còn khung mới (để <img> dừng)."""
+        import asyncio
+        j = get_job(jid)
+
+        async def gen():
+            last, idle = -1, 0
+            while True:
+                with state.lock:
+                    seq, jpg, status = state.frame_seq, state.frame_jpeg, state.status
+                if jpg is not None and seq != last:
+                    last, idle = seq, 0
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n'
+                else:
+                    idle += 1
+                    if (finished(j) or status in ('done', 'error', 'idle')) and idle > 60:      # ~2 s không có khung mới sau khi xong
+                        return
+                await asyncio.sleep(0.03)
+        return StreamingResponse(gen(), media_type='multipart/x-mixed-replace; boundary=frame', headers={'Cache-Control': 'no-store'})
 
     def art_boxes(j):
         """Hộp hiện vật (toạ độ khung rộng 960 px) lấy từ đường viền cảnh đầu tiên của dashboard."""
