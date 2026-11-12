@@ -381,6 +381,12 @@ async function runRealtime(src){
   const res=await API.result(id),imgs={};
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');S.progress=100;
+  /* Giữ khung cuối (đã vẽ khung đỏ nếu có cảnh báo) vài giây trước khi chuyển sang xem lại, như dashboard cũ (alarm_show_sec) */
+  if(LIVE===mine&&(res.alerts||[]).length&&!S.cancel){
+    try{const u=await API.blob(id,'live');if(u){const old=img.src;img.src=u;if(old&&old.startsWith('blob:'))URL.revokeObjectURL(old)}}catch{}
+    const hold=Math.max(0,+PIPE.alarm_show_sec||4);
+    setStatus('Có cảnh báo');logLine(`Xong — giữ khung cảnh báo ${hold}s rồi chuyển sang xem lại.`);
+    for(let t=0;t<hold*10&&!S.cancel&&LIVE===mine;t++)await sleep(100)}
   loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false});
   setStatus('Hoàn tất');logLine('Hoàn tất realtime: đã thay danh sách tạm bằng kết quả cuối.')}
 async function runDemoRealtime(){
