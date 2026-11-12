@@ -165,11 +165,40 @@ def _wrap_span(obj, attr, name):
     setattr(obj, attr, wrapped)
 
 
+def _wrap_span_sync(obj, attr, name):
+    """Như _wrap_span nhưng có torch.cuda.synchronize() sau lời gọi khi EXHIBITFLOW_PROF_SYNC=1: span gồm cả thời gian GPU tính
+    (mặc định tắt vì sync làm đổi nhịp chạy bất đồng bộ; chỉ bật khi muốn tách "phóng kernel" khỏi "GPU tính")."""
+    fn = getattr(obj, attr, None)
+    if fn is None or getattr(fn, '_ef_prof', False):
+        return
+    sync = os.environ.get('EXHIBITFLOW_PROF_SYNC') == '1' and torch.cuda.is_available()
+
+    def wrapped(*a, **k):
+        with _span(name):
+            out = fn(*a, **k)
+            if sync:
+                torch.cuda.synchronize()
+            return out
+    wrapped._ef_prof = True
+    setattr(obj, attr, wrapped)
+
+
 def _profile_tracker(tr):
-    """Chia nhỏ track.update: ReID (cắt ảnh người + OSNet), DMA fuse (GBM), LTC refine (motion), Kalman multi_predict."""
-    _wrap_span(getattr(tr, 'reid_extractor', None), 'extract', 'track.reid_extract')
+    """Chia nhỏ track.update. Tổng: reid_extract = reid_crop (cắt ảnh) + reid_model (phóng kernel OSNet, hoặc cả GPU tính khi
+    EXHIBITFLOW_PROF_SYNC=1) + phần còn lại (resize từng crop, chép lên GPU, chờ kết quả về CPU). ltc_refine = ltc_history + ltc_model + còn lại."""
+    rx = getattr(tr, 'reid_extractor', None)
+    _wrap_span(rx, 'extract', 'track.reid_extract')
+    _wrap_span_sync(getattr(rx, 'model', None), 'forward', 'track.reid_model')
+    try:                                                # crop_tlbrs là hàm module-level, extract() gọi qua tên toàn cục của module reid
+        import yolox.tracker.reid as _reid
+        _wrap_span(_reid, 'crop_tlbrs', 'track.reid_crop')
+    except Exception:                                   # noqa: BLE001
+        pass
     _wrap_span(getattr(tr, 'dma', None), 'fuse', 'track.dma_fuse')
-    _wrap_span(getattr(tr, 'motion_predictor', None), 'refine', 'track.ltc_refine')
+    mp = getattr(tr, 'motion_predictor', None)
+    _wrap_span(mp, 'refine', 'track.ltc_refine')
+    _wrap_span(mp, '_history_tensor', 'track.ltc_history')
+    _wrap_span_sync(getattr(mp, 'model', None), 'forward', 'track.ltc_model')
     _wrap_span(tr, '_fuse_reid', 'track.fuse_reid_total')          # gồm embedding_distance + dma_fuse
 
 
@@ -522,15 +551,79 @@ def _wide_crop(rec, S, nw, nh):
     return max(0, int(x1 - dx)), max(0, int(y1 - dy)), min(nw, int(x2 + dx)), min(nh, int(y2 + dd))
 
 
+class _PoseBoxes:
+    """Giống phần dùng của ultralytics Boxes: .xyxy (tensor CPU) và len()."""
+    def __init__(self, xyxy):
+        self.xyxy = xyxy
+
+    def __len__(self):
+        return len(self.xyxy)
+
+
 @register('pose', 'ultralytics_pose')
 class UltralyticsPose:
-    def __init__(self, weights='yolov8n-pose.pt', device=GPU_A, batch=True, wide_retry=None, **_):
+    def __init__(self, weights='yolov8n-pose.pt', device=GPU_A, batch=True, wide_retry=None, gpu_preproc=False, imgsz=640, **_):
         from ultralytics import YOLO
         self.model = YOLO(str(resolve_weight(weights)))
         self.device, self.batch = device, batch
         self.wide = CFG['pose_wide_retry'] if wide_retry is None else wide_retry
+        self.imgsz = int(imgsz)
+        # gpu_preproc: letterbox + resize + chuẩn hoá + NMS chạy trên GPU thay vì ở CPU của Ultralytics (cv2.resize từng crop). Chiếm ~44% thời gian pose
+        self.gpu_pp = bool(gpu_preproc and 'cuda' in str(device))
+        if self.gpu_pp:
+            try:                                        # Ultralytics mới chuyển NMS sang utils.nms; bản cũ ở utils.ops
+                from ultralytics.utils.nms import non_max_suppression as _nms
+            except ImportError:
+                from ultralytics.utils.ops import non_max_suppression as _nms
+            self._nms = _nms
+            self.model.fuse()                           # giống Predictor của Ultralytics (gộp conv + BN)
+            self._net = self.model.model.to(device).eval()
+            self._kpt_shape = tuple(getattr(self._net, 'kpt_shape', (17, 3)))
+            self._nc = len(getattr(self._net, 'names', {0: 'person'}))
+            if getattr(self._net, 'end2end', False):    # model NMS-free (end2end) có đầu ra khác: dùng đường CPU của Ultralytics
+                print('    pose: model end2end, không hỗ trợ GPU preproc -> dùng đường mặc định')
+                self.gpu_pp = False
+            print(f'    pose: tiền xử lý + NMS trên GPU (imgsz={self.imgsz})')
+
+    def _predict_gpu(self, crops):
+        """Tương đương self.model(crops): letterbox giữa ảnh (pad 114) + resize bilinear + /255 + RGB, forward, NMS, đổi toạ độ về crop."""
+        from types import SimpleNamespace
+        import torch.nn.functional as F
+        nms = self._nms
+        dev, sz = torch.device(self.device), self.imgsz
+        with _span('pose.gpu_preprocess'):
+            canvas = torch.full((len(crops), 3, sz, sz), 114.0 / 255.0, device=dev)
+            meta = []
+            for i, c in enumerate(crops):
+                h, w = c.shape[:2]
+                r = min(sz / h, sz / w)
+                nw_, nh_ = int(round(w * r)), int(round(h * r))
+                top, left = int(round((sz - nh_) / 2 - 0.1)), int(round((sz - nw_) / 2 - 0.1))
+                t = torch.from_numpy(np.ascontiguousarray(c)).to(dev, non_blocking=True).permute(2, 0, 1).unsqueeze(0).float()
+                t = F.interpolate(t, size=(nh_, nw_), mode='bilinear', align_corners=False)
+                canvas[i, :, top:top + nh_, left:left + nw_] = t[0].flip(0) / 255.0        # BGR -> RGB
+                meta.append((r, left, top, w, h))
+        with _span('pose.gpu_forward_nms'), torch.inference_mode():                        # NMS có đồng bộ -> gồm thời gian GPU tính
+            preds = nms(self._net(canvas), 0.25, 0.7, nc=self._nc, max_det=300)
+        out = []
+        with _span('pose.gpu_to_cpu'):
+            for p, (r, left, top, w, h) in zip(preds, meta):
+                p = p.clone()
+                p[:, [0, 2]] = ((p[:, [0, 2]] - left) / r).clamp_(0, w)
+                p[:, [1, 3]] = ((p[:, [1, 3]] - top) / r).clamp_(0, h)
+                k = p[:, 6:].view(len(p), *self._kpt_shape)
+                xy = k[..., :2].clone()
+                xy[..., 0] = ((xy[..., 0] - left) / r).clamp_(0, w)
+                xy[..., 1] = ((xy[..., 1] - top) / r).clamp_(0, h)
+                conf = k[..., 2] if self._kpt_shape[-1] == 3 else None
+                out.append(SimpleNamespace(boxes=_PoseBoxes(p[:, :4].cpu()),
+                                           keypoints=SimpleNamespace(xy=xy.cpu(), conf=None if conf is None else conf.cpu())))
+        return out
 
     def _predict(self, crops):
+        if self.gpu_pp:
+            with _span('pose.predict'):
+                return self._predict_gpu(crops)
         with _span('pose.predict'):                      # tiền xử lý Ultralytics (CPU) + suy luận + NMS; .cpu() ở sau mới chờ GPU xong
             res = self.model(crops, verbose=False, device=self.device)
         from .prof import add                            # Ultralytics tự đo từng ảnh: speed = {preprocess, inference, postprocess} (ms)

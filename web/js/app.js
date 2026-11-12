@@ -440,7 +440,7 @@ $('#beOff').onclick=async()=>{API.base='';$('#beUrl').value='';try{localStorage.
 $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
-const PIPE_DEF={tracker_process:true,hand_process:true,pose_process:true,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
+const PIPE_DEF={tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
   tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5};
 const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
 const pipeOpts=()=>({...PIPE});
@@ -465,7 +465,7 @@ function checkThreads(){
 async function loadCores(){
   try{const c=(await API.system()).cores||{};CORES.n=c.usable||c.logical||0;CORES.logical=c.logical||0;CORES.quota=c.quota||0;
     const el=$('#coreInfo');if(!el||!CORES.n)return;
-    el.textContent=`CPU khả dụng: ${CORES.n} nhân`+(c.logical&&c.logical!==CORES.n?` (máy chủ báo ${c.logical}`+(c.quota?`, hạn mức container ${c.quota}`:'')+')':'')+'. Số luồng mỗi tiến trình không được vượt số này.';
+    el.textContent=`CPU khả dụng cho server: ${CORES.n} nhân (đã trừ phần container không cho dùng). Số luồng mỗi tiến trình không được vượt số này.`;
     ['tracker','hand','pose'].forEach(k=>{const el2=$('#p-'+k+'_threads');if(el2){el2.max=CORES.n;if(+el2.value>CORES.n){el2.value=CORES.n;PIPE[k+'_threads']=CORES.n;savePipe()}}});
     checkThreads()}catch{}}
 function applySourceUI(){

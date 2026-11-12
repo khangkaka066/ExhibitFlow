@@ -56,7 +56,7 @@ SOURCE_ROOTS = [Path(p).resolve() for p in (os.environ.get('EXHIBITFLOW_SOURCE_R
                                             or os.pathsep.join(['/workspace', '/kaggle/input', '/kaggle/working', '/content', str(PROJ)])).split(os.pathsep) if p]
 WEB_DIR = Path(os.environ.get('EXHIBITFLOW_WEB_DIR') or PROJ.parent / 'web')   # giao diện web, phục vụ chung cổng với API
 # Cấu hình pipeline web được phép đặt (khoá + kiểu) = các mục tương ứng trong Settings của dashboard cũ
-PIPE_OPTS = dict(tracker_process=bool, hand_process=bool, pose_process=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float,
+PIPE_OPTS = dict(tracker_process=bool, hand_process=bool, pose_process=bool, pose_gpu_preproc=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float,
                   tracker_threads=int, hand_threads=int, pose_threads=int, queue_size=int, pose_gate_norm_dist=float)
 NW = 960                                   # web vẽ hộp hiện vật theo khung rộng 960 px
 
