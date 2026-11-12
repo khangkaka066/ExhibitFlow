@@ -88,6 +88,7 @@ RT = dict(
                                 # để mặc định thì 7 stage x 4 thread tranh nhau CPU -> detect / track chậm hẳn)
     render_live=False,           # sink ghi video live (overlay + HUD FPS/latency)
     alarm_show_sec=4.0,         # video live: thời gian giữ khung đỏ sau khi VLM báo
+    stream_max_sec=1800.0,      # camera (RTSP / webcam): thời lượng tối đa mỗi lần chạy (giây); bấm Dừng để kết thúc sớm hơn
     vlm_sync=True,              # mode parallel: khi gửi đoạn cho VLM thì dừng cả luồng video, VLM trả lời xong mới chạy tiếp
                                 # (alert khớp với khung hình đang xem; thời gian dừng không tính vào FPS / latency)
     vlm_sync_timeout_s=180.0,   # đợi VLM tối đa bấy nhiêu giây mỗi lần dừng (VLM treo thì vẫn chạy tiếp)

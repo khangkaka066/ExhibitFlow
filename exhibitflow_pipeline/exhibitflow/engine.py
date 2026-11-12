@@ -283,8 +283,10 @@ def _stage_fns(ctx):
 
 def reader_loop(ctx, out_q):
     d, rt = ctx.d, ctx.rt
-    realtime = rt['realtime'] and ctx.mode == 'parallel'
-    cap = cv2.VideoCapture(str(d['path']))
+    from .source import is_stream, open_capture
+    stream = is_stream(d['path'])
+    realtime = rt['realtime'] and ctx.mode == 'parallel' and not stream      # camera: nguồn tự chạy theo nhịp thật, không giả lập
+    cap = open_capture(d['path'])
     t0 = time.perf_counter()
     ctx.t_start = t0
     try:
@@ -320,6 +322,8 @@ def reader_loop(ctx, out_q):
     finally:
         cap.release()
         ctx.n_read = len(ctx.t_cap)
+        if stream:                                 # camera dừng sớm: số khung thật (kết quả / timeline không được ghi hàng giờ)
+            ctx.n = ctx.n_read
         out_q.put(EOS)
 
 

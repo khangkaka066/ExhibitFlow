@@ -8,7 +8,10 @@ và trả lời bằng API "job" mà web đang dùng:
     GET  /api/system                      CPU / RAM / GPU
     POST /api/jobs                        multipart: video (upload) | source (đường dẫn trên server / URL) + options -> {job_id}
     GET  /api/jobs/{id}                   {status, stage, stages, progress, key, error}
-    POST /api/jobs/{id}/cancel            dừng
+    POST /api/jobs/{id}/cancel            dừng (bỏ kết quả)
+    POST /api/jobs/{id}/finish            camera: dừng thu và xử lý nốt để có kết quả
+    POST /api/camera/session              tạo phiên webcam của trình duyệt -> {sid}; rồi mở WebSocket /api/camera/{sid}/push gửi từng khung JPEG
+                                          và tạo job với source=push://<sid>?fps=15. source=rtsp://... để đọc camera IP
     GET  /api/jobs/{id}/live              khung hình mới nhất (JPEG, đã vẽ khung người / hiện vật)
     GET  /api/jobs/{id}/live/events       meta + trạng thái + cảnh báo đang chạy (?after=<seq>)
     GET  /api/jobs/{id}/result            result.json của pipeline
@@ -42,12 +45,13 @@ PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ))
 
 import uvicorn  # noqa: E402
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
+from exhibitflow import source as efsource  # noqa: E402
 
 ALLOWED = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 MAX_BYTES = int(os.environ.get('EXHIBITFLOW_MAX_MB', '600')) * 1024 * 1024
@@ -96,8 +100,14 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
 
     def resolve_source(src, dst_dir):
         """URL http(s) (tải về) hoặc đường dẫn file / thư mục trên server (chỉ trong SOURCE_ROOTS)."""
-        if re.match(r'^(rtsps?|rtmps?)://', src, re.I):
-            raise HTTPException(501, 'Chưa hỗ trợ nguồn camera trực tiếp (RTSP/RTMP): pipeline hiện chỉ đọc file video.')
+        if re.match(r'^(rtsps?|rtmps?)://', src, re.I):          # camera IP: file mô tả .efstream thay cho đường dẫn video
+            return efsource.write_stream_file(dst_dir / f'cam_{uuid.uuid4().hex[:8]}{efsource.STREAM_EXT}', url=src), 'Camera ' + efsource._mask(src)
+        m = re.match(r'^push://([\w-]+)(?:\?fps=(\d+))?$', src)
+        if m:                                                      # webcam của trình duyệt (khung đẩy qua WebSocket)
+            if m.group(1) not in efsource.PUSH:
+                raise HTTPException(400, 'Phiên webcam không tồn tại hoặc đã đóng: mở lại camera rồi thử lại.')
+            return efsource.write_stream_file(dst_dir / f'cam_{uuid.uuid4().hex[:8]}{efsource.STREAM_EXT}', push=m.group(1),
+                                              fps=int(m.group(2) or 15)), 'Camera máy'
         if re.match(r'^https?://', src, re.I):
             ext = Path(urllib.parse.urlparse(src).path).suffix.lower() or '.mp4'
             check_ext(ext)
@@ -128,6 +138,8 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         return p, p.name
 
     def video_info(path):
+        if efsource.is_stream(path):             # camera: chưa mở (mở ở luồng pipeline); kích thước lấy từ efsource.INFO khi có
+            return dict(fps=25.0, n_frames=0, width=0, height=0)
         try:
             import cv2
             cap = cv2.VideoCapture(str(path))
@@ -138,6 +150,12 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             return info
         except Exception:                      # noqa: BLE001
             return dict(fps=25.0, n_frames=0, width=0, height=0)
+
+    def vinfo_of(j):
+        """Thông tin video của job; với camera thì cập nhật từ kích thước / fps pipeline đã đo ở lần mở đầu."""
+        if efsource.is_stream(j['path']) and (m := efsource.INFO.get(str(j['path']))):
+            j['vinfo'] = dict(fps=m['fps'], n_frames=0, width=m['width'], height=m['height'])
+        return j['vinfo']
 
     def get_job(jid):
         j = jobs.get(jid)
@@ -285,6 +303,9 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         else:
             raise HTTPException(400, 'Cần gửi video hoặc đường dẫn / URL')
         # realtime: đọc đúng nhịp fps như camera, bỏ frame nếu không kịp; theo lô (Video): xử lý mọi frame
+        if efsource.is_stream(vpath):             # camera: thời lượng tối đa (phút) + không giả lập realtime
+            from exhibitflow import settings as efs
+            efs.RT['stream_max_sec'] = max(10.0, float(opts.get('camera_max_min') or 30) * 60)
         pipe = {k: t(opts[k]) for k, t in PIPE_OPTS.items() if opts.get(k) is not None}
         state.save_settings(dict(pipe, realtime=bool(opts.get('realtime'))))
         try:
@@ -307,6 +328,39 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             key = rd.name if rd else (state.cam_name or j['path'].stem)
         return dict(status=v['status'], stage=v['stage'], stages=STAGES, progress=v['progress'], log=[], key=key,
                     error=v['error'], name=j['name'], realtime=j['realtime'])
+
+    @app.post('/api/camera/session')
+    def camera_session():
+        """Phiên webcam: trình duyệt mở WebSocket /api/camera/{sid}/push và gửi từng khung JPEG (binary)."""
+        sid = uuid.uuid4().hex[:12]
+        efsource.PUSH[sid] = efsource.PushBuffer()
+        return {'sid': sid, 'ws': f'/api/camera/{sid}/push'}
+
+    @app.websocket('/api/camera/{sid}/push')
+    async def camera_push(ws: WebSocket, sid: str):
+        buf = efsource.PUSH.get(sid)
+        if buf is None:
+            await ws.close(code=4404)
+            return
+        await ws.accept()
+        try:
+            while True:
+                buf.put(await ws.receive_bytes())
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            buf.close()                           # đóng luồng: pipeline đọc hết khung còn lại rồi kết thúc và ghi kết quả
+            efsource.PUSH.pop(sid, None)
+
+    @app.post('/api/jobs/{jid}/finish')
+    def finish(jid: str):
+        """Camera: dừng thu rồi xử lý nốt (VLM các đoạn còn lại) để ra kết quả. Khác /cancel: không bỏ kết quả."""
+        j = get_job(jid)
+        v = view(j)
+        if v['status'] in ('done', 'error', 'cancelled'):
+            return {'status': v['status']}
+        runner.stop()
+        return {'status': 'finishing'}
 
     @app.post('/api/jobs/{jid}/cancel')
     def cancel(jid: str):
@@ -352,7 +406,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
 
     def art_boxes(j):
         """Hộp hiện vật (toạ độ khung rộng 960 px) lấy từ đường viền cảnh đầu tiên của dashboard."""
-        vi = j['vinfo']
+        vi = vinfo_of(j)
         ratio = (vi['height'] / vi['width']) if vi['width'] else 0.5625
         with state.lock:
             scenes = list(state.scene_contours)
@@ -369,7 +423,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     @app.get('/api/jobs/{jid}/live/events')
     def live_events(jid: str, after: int = 0):
         j = get_job(jid)
-        vi = j['vinfo']
+        vi = vinfo_of(j)
         with state.lock:
             fi, nf, fps_now, alerts = state.frame_idx, state.n_frames, state.fps, list(state.alerts)
             running = state.status in ('running', 'finishing', 'done')
@@ -390,7 +444,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     # ------------------------------------------------------------------ kết quả
     def synth_result(j):
         """Không có result.json (chế độ demo): dựng từ danh sách cảnh báo để web vẫn hiện được."""
-        vi = j['vinfo']
+        vi = vinfo_of(j)
         with state.lock:
             alerts = list(state.alerts)
         fps = vi['fps'] or 25.0
@@ -420,7 +474,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         rd = result_dir(j) if finished(j) else None
         if kind != 'original' and rd is not None and (rd / 'live.mp4').is_file():
             return FileResponse(rd / 'live.mp4', media_type='video/mp4')
-        if not j['path'].is_file():
+        if efsource.is_stream(j['path']) or not j['path'].is_file():
             raise HTTPException(404, 'Không còn video')
         return FileResponse(j['path'])
 

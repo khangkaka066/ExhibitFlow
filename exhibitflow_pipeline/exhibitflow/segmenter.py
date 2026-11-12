@@ -323,8 +323,9 @@ def artifact_cache_dir(key, seg_spec, ref_idx):
 
 def read_frames(d, idxs):
     """Đọc đúng các frame idxs (đọc tuần tự, không seek -> chính xác với mọi codec), resize về ảnh làm việc."""
+    from .source import open_capture
     want, out = {int(i) for i in idxs}, {}
-    cap = cv2.VideoCapture(str(d['path']))
+    cap = open_capture(d['path'])
     try:
         i = 0
         while len(out) < len(want) and i <= max(want):
@@ -384,6 +385,9 @@ def video_scenes(key, d):
     p = Path(str(d['path']))
     spec = next((SEG_REF_FRAMES[k] for k in (key, p.name, p.stem) if k in SEG_REF_FRAMES), RT.get('seg_ref_default', 'first'))
     n = max(1, d['n'])
+    from .source import is_stream
+    if is_stream(d['path']):
+        spec = 'first'                              # camera: không quét được cả video để tách cảnh; segment trên khung đầu
     if spec == 'auto':
         scenes = detect_scenes(d['path'], RT['scene_cut_diff'], RT['scene_min_sec'], RT['scene_ref_offset_sec'], max_frames=n,
                               step_sec=float(RT.get('scene_step_sec', 0) or 0))

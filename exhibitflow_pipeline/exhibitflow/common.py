@@ -62,15 +62,21 @@ def iou_matrix(A, B):
 
 
 def video_meta(path, max_frames=None):
-    cap = cv2.VideoCapture(str(path))
+    from .source import is_stream, open_capture
+    cap = open_capture(path)
     if not cap.isOpened():
         raise RuntimeError(f'Không mở được video: {path}')
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     nw, nh = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+    if is_stream(path):                                # camera: không có tổng số khung -> giới hạn theo thời lượng tối đa (RT['stream_max_sec'])
+        if nw <= 0 or nh <= 0:
+            raise RuntimeError('Camera không gửi khung hình nào (đợi 20 s): kiểm tra URL / quyền truy cập camera.')
+        from . import settings as _st
+        n = int(fps * float(_st.RT.get('stream_max_sec', 1800)))
     if max_frames:
-        n = min(n, max_frames)
+        n = min(n, max_frames) if n else max_frames
     w = CFG['width']
     return dict(fps=fps, n=n, NW=nw, NH=nh, W=w, H=int(round(nh * w / nw)), S=nw / w)
 

@@ -157,6 +157,27 @@ def test_end_to_end_fake_llama_server():
         assert sizes and all(max(s) <= 512 for s in sizes), sizes
 
 
+def test_camera_stream_source():
+    """Nguồn camera (.efstream -> LiveCapture): phát file như camera. Kiểm tra: mở được, segment trên khung đầu, ra event + cảnh báo,
+    và số khung trong kết quả là số khung THẬT đã đọc (không phải giới hạn thời lượng tối đa)."""
+    from exhibitflow import run_pipeline, source
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        video = Path(tmp) / 'cam_src.avi'
+        make_video(video)
+        stub = source.write_stream_file(Path(tmp) / 'cam_test.efstream', url=str(video))
+        out = Path(tmp) / 'out'
+        summary = run_pipeline([str(stub)], out_dir=out, work_dir=Path(tmp) / 'work',
+                               overrides=dict(models=dict(FAKE_MODELS, vlm=dict(backend='dry_run', delay_s=0.0)),
+                                              rt=dict(queue_size=4, pose_gate_norm_dist=None)))
+        assert not summary['errors'], summary['errors']
+        res = json.loads((out / 'cam_test' / 'result.json').read_text(encoding='utf-8'))
+        n = res['video']['n_frames']
+        assert 0.8 * N <= n <= N, f'n_frames phải là số khung thật đã đọc (~{N}), nhận {n}'
+        assert res['video']['width'] == W and res['video']['fps'] == FPS
+        assert res['events'] and res['alerts'], 'camera: phải có event + cảnh báo như video file'
+        assert source.INFO[str(stub)]['width'] == W
+
+
 def test_helpers():
     from exhibitflow.vlm import adapt_task, parse_response
     from main import parse_set

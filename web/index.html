@@ -41,12 +41,16 @@
   <div class="grid">
     <div class="col">
       <div class="card">
-        <h3><span id="vtitle">Video phân tích</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
+        <h3><span id="vtitle">Video phân tích</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Camera: webcam của máy hoặc camera RTSP, chạy liên tục tới khi bấm Dừng. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button><button class="tg" data-mode="cam">Camera</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
         <div class="srcrow">
           <div class="srcvar" id="srcFile">
             <input id="src" class="txt" type="text" placeholder="Đường dẫn file / thư mục (trên server) hoặc URL video (.mp4 ...)" spellcheck="false">
             <input type="file" id="file" accept="video/*" hidden>
             <button class="btn" id="uploadBtn">Upload</button>
+          </div>
+          <div class="srcvar" id="srcCam" hidden>
+            <select id="camKind" class="txt" style="flex:0 0 200px"><option value="webcam">Camera máy (trình duyệt)</option><option value="rtsp">RTSP / RTMP (camera IP)</option></select>
+            <input id="rtspUrl" class="txt" type="text" placeholder="rtsp://user:pass@ip:554/stream" spellcheck="false" hidden>
           </div>
           <button class="btn pri" id="runBtn">Phân tích</button>
           <button class="btn stop" id="stopBtn" disabled>Dừng</button>
@@ -136,6 +140,7 @@
       <div class="chk"><label><input type="checkbox" id="p-drop_frames" checked> Realtime: bỏ frame khi pipeline không theo kịp</label></div>
       <div class="chk"><label><input type="checkbox" id="p-limit_cpu_threads"> Giới hạn 1 luồng CPU mỗi stage (máy ít nhân)</label></div>
       <div class="opt"><label>Giữ khung đỏ cảnh báo (giây)</label><input type="number" id="p-alarm_show_sec" class="txt" step="0.5" min="0" value="4"></div>
+      <div class="opt"><label>Camera: thời lượng tối đa mỗi lần chạy (phút)</label><input type="number" id="p-camera_max_min" class="txt" step="1" min="1" max="240" value="30"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình tracker</label><input type="number" id="p-tracker_threads" class="txt" step="1" min="1" max="64" value="1"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình hand (torch/OpenCV; onnxruntime tự chọn)</label><input type="number" id="p-hand_threads" class="txt" step="1" min="1" max="64" value="1"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình pose</label><input type="number" id="p-pose_threads" class="txt" step="1" min="1" max="64" value="4"></div>

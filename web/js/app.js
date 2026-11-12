@@ -164,7 +164,7 @@ const S={t:0,playing:false,speed:1,videoURL:null,file:null,filter:'all',loaded:f
   progress:0,srcName:'',layers:{boxes:true,skel:false,labels:true,art:false},mlayers:{trails:true,zones:true,heat:false}};
 const vid=$('#vid');
 let LIVE=null;
-S.mode=(()=>{try{return localStorage.getItem('ef_mode')==='rt'?'rt':'batch'}catch{return 'batch'}})();S.liveSim=false;
+S.mode=(()=>{try{const m=localStorage.getItem('ef_mode');return m==='rt'||m==='cam'?m:'batch'}catch{return 'batch'}})();S.liveSim=false;
 const EMPTY={meta:{duration:60,camera_id:'',width:1280,height:720,nw:960},arts:[],tracks:[],events:[]};
 
 /* ---------- Backend ---------- */
@@ -184,6 +184,7 @@ const API={base:(()=>{try{return localStorage.getItem('ef_api')||''}catch{return
   async job(id){return (await this.f(`/api/jobs/${id}`)).json()},
   async result(id){return (await this.f(`/api/jobs/${id}/result`)).json()},
   async cancel(id){try{await this.f(`/api/jobs/${id}/cancel`,{method:'POST'})}catch{}},
+  async finish(id){try{await this.f(`/api/jobs/${id}/finish`,{method:'POST'})}catch{}},
   async blob(id,p){try{return URL.createObjectURL(await (await this.f(`/api/jobs/${id}/${p}`)).blob())}catch{return null}}
 };
 
@@ -194,7 +195,8 @@ const noisyLog=l=>/\d+%\||it\/s|s\/it|^Fetching \d+ files|\[\d+:\d+<|[█▏▎�
 function stageLine(j,seen){const n=(j.stages||[]).length,i=j.stage;if(j.status==='running'&&n&&i>=0&&i<n&&!seen.has('s'+i)){seen.add('s'+i);logLine(`[${i+1}/${n}] ${j.stages[i]}`)}}
 function logLine(m){const el=$('#srcmsg');el.textContent=m;el.className='srcmsg'+(/^(LỖI|Chưa)/.test(m)?' err':'')}
 function setStatus(t){$('#vstat').textContent=t}
-function setBusy(b){S.running=b;$('#modeSel').classList.toggle('lock',b);$('#runBtn').disabled=b;$('#stopBtn').disabled=!b;$('#uploadBtn').disabled=b;$('#src').disabled=b;if(b)$('#runBtn').textContent='Đang chạy…';else applySourceUI()}
+function setBusy(b){S.running=b;$('#modeSel').classList.toggle('lock',b);$('#runBtn').disabled=b;$('#stopBtn').disabled=!b;$('#uploadBtn').disabled=b;$('#src').disabled=b;$('#camKind').disabled=b;$('#rtspUrl').disabled=b;$('#stopBtn').textContent=b&&S.mode==='cam'?'Dừng & xem kết quả':'Dừng';
+  if(b)$('#runBtn').textContent='Đang chạy…';else applySourceUI()}
 
 /* ---------- System status ---------- */
 let SYS=null;const sim={cpu:6,ram:2.4,gpu:0,vram:.3};
@@ -346,14 +348,15 @@ function applyLive(le){
       if(e.decision==='ANOMALY')L.banner={text:`Visitor #${e.track}: ${evLabel(row)} — ${(DATA.arts.find(a=>a.id===art)||{name:'hiện vật '+art}).name}`,cls:'red',until:performance.now()+8000}}}
   const st=le.status;
   if(st){S.t=st.t_s||0;S.progress=st.n_frames?Math.max(0,st.frame)/st.n_frames*100:0;
-    $('#rthud').textContent=`LIVE · khung ${Math.max(st.frame,0)}/${st.n_frames} · ${st.live_fps} FPS · bỏ ${st.dropped} khung · VLM chờ ${st.vlm_pending==null?0:st.vlm_pending}`}
+    $('#rthud').textContent=`${S.mode==='cam'?'CAMERA':'LIVE'} · khung ${Math.max(st.frame,0)}${S.mode==='cam'?'':'/'+st.n_frames} · ${st.live_fps} FPS · bỏ ${st.dropped} khung · VLM chờ ${st.vlm_pending==null?0:st.vlm_pending}`}
   renderAll()}
-async function runRealtime(src){
-  const fd=new FormData();if(S.file)fd.append('video',S.file);else fd.append('source',src);
-  fd.append('options',JSON.stringify({conf:+$('#conf').value,...pipeOpts(),realtime:true}));
-  setStatus('Realtime: đang khởi động');logLine('Realtime: gửi yêu cầu tới backend…');
+async function runRealtime(src,camera=false){
+  const fd=new FormData();if(S.file&&!camera)fd.append('video',S.file);else fd.append('source',src);
+  fd.append('options',JSON.stringify({conf:+$('#conf').value,...pipeOpts(),realtime:true,camera}));
+  const tag=camera?'Camera':'Realtime';
+  setStatus(tag+': đang khởi động');logLine(camera?'Camera: chuẩn bị (tách hiện vật trên khung đầu tiên, có thể mất vài giây)…':'Realtime: gửi yêu cầu tới backend…');
   const id=await API.start(fd);S.jobId=id;
-  prepareLiveView(S.file?S.file.name:src);LIVE={id,after:0,meta:null,banner:null};const mine=LIVE;
+  prepareLiveView(camera?(src.startsWith('push://')?'Camera máy':src.replace(/(:\/\/[^:\/@]+:)[^@]*@/,'$1***@')):(S.file?S.file.name:src));LIVE={id,after:0,meta:null,banner:null};const mine=LIVE;
   let stop=false;const img=$('#liveimg');
   /* Luồng MJPEG: server đẩy từng khung ngay khi có (như dashboard cũ). Poll từng khung + sleep(120ms) chỉ được ~5-8 khung/s nên nhìn bị trễ. */
   let streamFailed=false;
@@ -364,12 +367,16 @@ async function runRealtime(src){
       try{const u=await API.blob(id,'live');if(u&&LIVE===mine){const old=img.src;img.src=u;if(old&&old.startsWith('blob:'))URL.revokeObjectURL(old)}}catch{}
       await sleep(60)}
     else await sleep(200)}})();
-  const seen=new Set();let key=null;
+  const seen=new Set();let key=null,finSent=false;
   try{for(;;){
-    if(S.cancel){await API.cancel(id);stop=true;LIVE=null;return stopped()}
+    if(S.cancel){
+      if(camera){   /* camera: Dừng = kết thúc thu rồi xử lý nốt để có kết quả (không bỏ) */
+        if(!finSent){finSent=true;logLine('Đang dừng camera và xử lý kết quả…');setStatus('Đang xử lý kết quả camera');await API.finish(id)}
+      }else{await API.cancel(id);stop=true;LIVE=null;return stopped()}
+    }
     const j=await API.job(id);
     stageLine(j,seen);
-    if(j.stage>=3||j.status==='done')setStatus('Realtime · LIVE');
+    if((j.stage>=3||j.status==='done')&&!finSent)setStatus(tag+' · LIVE');
     let le=null;try{le=await(await API.f(`/api/jobs/${id}/live/events?after=${mine.after}`)).json()}catch{}
     if(le&&LIVE===mine)applyLive(le);
     if(j.status==='done'){key=j.key;break}
@@ -382,13 +389,13 @@ async function runRealtime(src){
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');S.progress=100;
   /* Giữ khung cuối (đã vẽ khung đỏ nếu có cảnh báo) vài giây trước khi chuyển sang xem lại, như dashboard cũ (alarm_show_sec) */
-  if(LIVE===mine&&(res.alerts||[]).length&&!S.cancel){
+  if(LIVE===mine&&(res.alerts||[]).length&&(camera||!S.cancel)){
     try{const u=await API.blob(id,'live');if(u){const old=img.src;img.src=u;if(old&&old.startsWith('blob:'))URL.revokeObjectURL(old)}}catch{}
     const hold=Math.max(0,+PIPE.alarm_show_sec||4);
     setStatus('Có cảnh báo');logLine(`Xong — giữ khung cảnh báo ${hold}s rồi chuyển sang xem lại.`);
-    for(let t=0;t<hold*10&&!S.cancel&&LIVE===mine;t++)await sleep(100)}
+    for(let t=0;t<hold*10&&(camera||!S.cancel)&&LIVE===mine;t++)await sleep(100)}
   loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false});
-  setStatus('Hoàn tất');logLine('Hoàn tất realtime: đã thay danh sách tạm bằng kết quả cuối.')}
+  setStatus('Hoàn tất');logLine(camera?'Hoàn tất camera: đã thay danh sách tạm bằng kết quả cuối.':'Hoàn tất realtime: đã thay danh sách tạm bằng kết quả cuối.')}
 async function runDemoRealtime(){
   setStatus('Realtime (mô phỏng)');logLine('Chế độ demo: mô phỏng realtime, cảnh báo hiện dần theo thời gian video.');
   const dur=S.videoURL&&vid.duration?Math.round(vid.duration)||60:60;
@@ -403,13 +410,45 @@ function setMode(m){S.mode=m;try{localStorage.setItem('ef_mode',m)}catch{}
   applySourceUI()}
 $('#modeSel').onclick=e=>{const b=e.target.closest('[data-mode]');if(b&&!S.running)setMode(b.dataset.mode)};
 
+/* Camera: webcam của trình duyệt (đẩy khung JPEG qua WebSocket lên server) hoặc camera IP RTSP (server tự đọc) */
+async function runCamera(){
+  const kind=$('#camKind').value;let src='',cleanup=()=>{};
+  try{
+    if(kind==='rtsp'){
+      src=$('#rtspUrl').value.trim();
+      if(!/^(rtsps?|rtmps?):\/\//i.test(src)){setStatus('Chưa có URL camera');logLine('Chưa có URL: nhập dạng rtsp://user:pass@ip:554/stream');return}
+      try{localStorage.setItem('ef_rtsp',src)}catch{}
+    }else{
+      if(!navigator.mediaDevices||!window.isSecureContext){
+        setStatus('Không bật được camera máy');
+        logLine('Trình duyệt chỉ cho bật camera trên HTTPS hoặc localhost. Cách 1: mở web ở máy bạn bằng `python web/serve.py` (http://127.0.0.1:8765) rồi đặt URL server ở Settings. Cách 2: chrome://flags/#unsafely-treat-insecure-origin-as-secure, thêm địa chỉ trang này rồi khởi động lại Chrome.');return}
+      setStatus('Đang xin quyền camera…');
+      let stream;
+      try{stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:15}},audio:false})}
+      catch(e){setStatus('Không bật được camera máy');logLine('Không mở được camera máy: '+(e.name==='NotAllowedError'?'bạn chưa cho phép truy cập camera':e.message));return}
+      const sess=await (await API.f('/api/camera/session',{method:'POST'})).json();
+      const ws=new WebSocket((API.base||location.origin).replace(/^http/,'ws')+sess.ws);ws.binaryType='arraybuffer';
+      cleanup=()=>{try{ws.close()}catch{};stream.getTracks().forEach(t=>t.stop())};
+      await new Promise((ok,bad)=>{ws.onopen=ok;ws.onerror=()=>bad(new Error('Không kết nối được WebSocket tới server'));setTimeout(()=>bad(new Error('WebSocket quá thời gian')),8000)});
+      const v=document.createElement('video');v.srcObject=stream;v.muted=true;v.playsInline=true;await v.play();
+      const FPS=15,MAXW=960,sc=Math.min(1,MAXW/(v.videoWidth||MAXW)),cv=document.createElement('canvas');
+      cv.width=Math.round((v.videoWidth||MAXW)*sc);cv.height=Math.round((v.videoHeight||540)*sc);const c2=cv.getContext('2d');
+      const timer=setInterval(()=>{
+        if(ws.readyState!==1||ws.bufferedAmount>1500000)return;          /* mạng chậm: bỏ khung thay vì dồn hàng đợi */
+        c2.drawImage(v,0,0,cv.width,cv.height);cv.toBlob(b=>{if(b&&ws.readyState===1)ws.send(b)},'image/jpeg',0.75)},1000/FPS);
+      const c0=cleanup;cleanup=()=>{clearInterval(timer);c0()};
+      src=`push://${sess.sid}?fps=${FPS}`;
+    }
+    await runRealtime(src,true);
+  }finally{cleanup()}
+}
 async function startAnalysis(){
   if(S.running)return;
-  const src=$('#src').value.trim();
-  if(!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
+  const cam=S.mode==='cam',src=$('#src').value.trim();
+  if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    if(API.ok)await(S.mode==='rt'?runRealtime(src):runLive(src));
+    if(API.ok)await(S.mode==='cam'?runCamera():S.mode==='rt'?runRealtime(src):runLive(src));
     else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime():runDemo());
     else{setStatus('Mất kết nối');logLine('Chưa kết nối được server. Kiểm tra server còn chạy (Settings → Server).')}
   }catch(err){logLine('LỖI: '+err.message);setStatus('Lỗi')}
@@ -452,7 +491,7 @@ $('#beOff').onclick=async()=>{API.base='';$('#beUrl').value='';try{localStorage.
 $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
-const PIPE_DEF={pipeline_mode:'full',tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
+const PIPE_DEF={camera_max_min:30,pipeline_mode:'full',tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
   tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5};
 const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
 const pipeOpts=()=>({...PIPE});
@@ -482,8 +521,12 @@ async function loadCores(){
     ['tracker','hand','pose'].forEach(k=>{const el2=$('#p-'+k+'_threads');if(el2){el2.max=CORES.n;if(+el2.value>CORES.n){el2.value=CORES.n;PIPE[k+'_threads']=CORES.n;savePipe()}}});
     checkThreads()}catch{}}
 function applySourceUI(){
-  $('#runBtn').textContent=S.mode==='rt'?'Bắt đầu':'Phân tích';
-  $('#vtitle').textContent=S.mode==='rt'?'Video realtime':'Video phân tích'}
+  const cam=S.mode==='cam';
+  $('#srcFile').hidden=cam;$('#srcCam').hidden=!cam;$('#rtspUrl').hidden=!(cam&&$('#camKind').value==='rtsp');
+  $('#runBtn').textContent=cam?'Bật camera':S.mode==='rt'?'Bắt đầu':'Phân tích';
+  $('#vtitle').textContent=cam?'Camera trực tiếp':S.mode==='rt'?'Video realtime':'Video phân tích'}
+$('#camKind').onchange=applySourceUI;
+try{$('#rtspUrl').value=localStorage.getItem('ef_rtsp')||''}catch{}
 
 /* ---------- Khởi động ---------- */
 resetData();renderSystem();setStatus('Chưa chạy');setMode(S.mode);
