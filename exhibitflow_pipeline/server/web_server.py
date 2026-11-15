@@ -10,6 +10,11 @@ và trả lời bằng API "job" mà web đang dùng:
     GET  /api/jobs/{id}                   {status, stage, stages, progress, key, error}
     POST /api/jobs/{id}/cancel            dừng (bỏ kết quả)
     POST /api/jobs/{id}/finish            camera: dừng thu và xử lý nốt để có kết quả
+    POST /api/multi-jobs                  nhiều camera (2-8): song song (options.multi_parallel, tối đa multi_max_parallel camera cùng lúc,
+                                          mỗi camera một tiến trình riêng) hoặc tuần tự. Form gồm options (JSON), cameras (JSON [{name, source}]),
+                                          và video_<i> (file upload của camera i) -> {multi_id}
+    GET  /api/multi-jobs/{id}             trạng thái từng camera (job_id, status), cảnh báo gộp (có nhãn camera), camera đang chạy (cur)
+    POST /api/multi-jobs/{id}/finish      dừng: job con đang chạy xử lý nốt, các camera còn lại bỏ qua
     POST /api/camera/session              tạo phiên webcam của trình duyệt -> {sid}; rồi mở WebSocket /api/camera/{sid}/push gửi từng khung JPEG
                                           và tạo job với source=push://<sid>?fps=15. source=rtsp://... để đọc camera IP
     GET  /api/jobs/{id}/live              khung hình mới nhất (JPEG, đã vẽ khung người / hiện vật)
@@ -26,6 +31,7 @@ Biến môi trường: EXHIBITFLOW_WEB_DIR (thư mục giao diện, mặc địn
 trên Linux), EXHIBITFLOW_MAX_MB (giới hạn upload, mặc định 600), EXHIBITFLOW_SAVE_VIDEO=0 để không ghi live.mp4.
 """
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -45,12 +51,14 @@ PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ))
 
 import uvicorn  # noqa: E402
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
+from exhibitflow import cam_worker  # noqa: E402
+from exhibitflow import multicam  # noqa: E402
 from exhibitflow import source as efsource  # noqa: E402
 
 ALLOWED = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -62,8 +70,14 @@ WEB_DIR = Path(os.environ.get('EXHIBITFLOW_WEB_DIR') or PROJ.parent / 'web')   #
 # Cấu hình pipeline web được phép đặt (khoá + kiểu) = các mục tương ứng trong Settings của dashboard cũ
 PIPE_MODES = ('tracking', 'tracking_seg', 'full')
 PIPE_OPTS = dict(pipeline_mode=lambda v: v if v in PIPE_MODES else 'full', tracker_process=bool, hand_process=bool, pose_process=bool, pose_gpu_preproc=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float,
-                  tracker_threads=int, hand_threads=int, pose_threads=int, queue_size=int, pose_gate_norm_dist=float)
-NW = 960                                   # web vẽ hộp hiện vật theo khung rộng 960 px
+                  tracker_threads=int, hand_threads=int, pose_threads=int, queue_size=int, pose_gate_norm_dist=float,
+                  multi_parallel=bool, multi_max_parallel=int)
+NW = 960
+
+
+def pipe_of(opts):
+    """Cấu hình pipeline lấy từ options của request (chỉ các khoá trong PIPE_OPTS)."""
+    return {k: t(opts[k]) for k, t in PIPE_OPTS.items() if opts.get(k) is not None}                                   # web vẽ hộp hiện vật theo khung rộng 960 px
 
 
 def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
@@ -89,7 +103,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
 
     app = FastAPI(title='ExhibitFlow Web API')
     app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
-    jobs, cur = {}, {'id': None}
+    jobs, cur, multis = {}, {'id': None}, {}
     uploads = state.root / 'uploads'
     uploads.mkdir(parents=True, exist_ok=True)
 
@@ -97,6 +111,21 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def check_ext(ext):
         if ext not in ALLOWED:
             raise HTTPException(400, f'Định dạng không hỗ trợ ({ext or "không có đuôi"}). Dùng: {", ".join(sorted(ALLOWED))}')
+
+    async def save_upload(video):
+        """Ghi file upload vào thư mục uploads -> (đường dẫn, tên gốc)."""
+        ext = Path(video.filename).suffix.lower()
+        check_ext(ext)
+        vpath, size = uploads / f'{uuid.uuid4().hex[:8]}{ext}', 0
+        with open(vpath, 'wb') as f:
+            while chunk := await video.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    f.close()
+                    vpath.unlink(missing_ok=True)
+                    raise HTTPException(413, f'Video quá lớn (tối đa {MAX_BYTES >> 20} MB)')
+                f.write(chunk)
+        return vpath, video.filename
 
     def resolve_source(src, dst_dir):
         """URL http(s) (tải về) hoặc đường dẫn file / thư mục trên server (chỉ trong SOURCE_ROOTS)."""
@@ -167,7 +196,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         """Thư mục kết quả (chứa result.json) của job: tìm result.json mới nhất sinh ra sau khi job bắt đầu."""
         if j.get('rdir') is not None:
             return j['rdir']
-        found = [p for p in (state.root / 'results').rglob('result.json') if p.stat().st_mtime >= j['t0'] - 2]
+        found = [p for p in ((j.get('root') or state.root) / 'results').rglob('result.json') if p.stat().st_mtime >= j['t0'] - 2]
         if not found:
             return None
         j['rdir'] = max(found, key=lambda p: p.stat().st_mtime).parent
@@ -177,8 +206,35 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         """Job đã có kết quả cuối (trạng thái chốt, không đổi nữa)."""
         return j.get('final') is not None
 
+    def remote_view(j):
+        """Job con chạy trong tiến trình riêng (multi-camera song song): trạng thái đọc từ tiến trình đó."""
+        if finished(j):
+            return j['final']
+        try:
+            v = cam_worker.view_of(j['remote'].snap(), cancelled=j['cancelled'])
+        except Exception as e:  # noqa: BLE001 - tiến trình con chết / lỗi IPC: chỉ camera này lỗi
+            v = dict(status='error', stage=0, progress=0, error=f'Tiến trình camera lỗi: {e}'[:300])
+        if v['status'] in ('done', 'error', 'cancelled'):
+            j['final'] = v
+        return v
+
+    def remote_frame(j, last):
+        try:
+            return j['remote'].frame(last)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def stop_job(j):
+        """Dừng một job: job con (multi song song) hoặc pipeline chung của server."""
+        if j.get('remote') is not None:
+            j['remote'].stop()
+        else:
+            runner.stop()
+
     def view(j):
         """Chuyển trạng thái `State` của dashboard sang trạng thái job mà web hiểu."""
+        if j.get('remote') is not None:
+            return remote_view(j)
         if finished(j):
             return j['final']
         if cur['id'] != j['id']:                # job cũ bị job mới thay: coi như đã dừng
@@ -286,37 +342,153 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         if runner.loading():
             raise HTTPException(409, 'Model đang nạp (lần đầu mất vài phút), thử lại sau.')
         if video is not None and video.filename:
-            ext = Path(video.filename).suffix.lower()
-            check_ext(ext)
-            vpath, size = uploads / f'{uuid.uuid4().hex[:8]}{ext}', 0
-            with open(vpath, 'wb') as f:
-                while chunk := await video.read(1 << 20):
-                    size += len(chunk)
-                    if size > MAX_BYTES:
-                        f.close()
-                        vpath.unlink(missing_ok=True)
-                        raise HTTPException(413, f'Video quá lớn (tối đa {MAX_BYTES >> 20} MB)')
-                    f.write(chunk)
-            name = video.filename
+            vpath, name = await save_upload(video)
         elif source.strip():
             vpath, name = resolve_source(source.strip(), uploads)
         else:
             raise HTTPException(400, 'Cần gửi video hoặc đường dẫn / URL')
+        return {'job_id': start_job(vpath, name, opts, realtime=bool(opts.get('realtime')))}
+
+    def start_job(vpath, name, opts, realtime):
+        """Khởi chạy một lần pipeline cho một nguồn; dùng chung cho job đơn và job con của multi-camera."""
         # realtime: đọc đúng nhịp fps như camera, bỏ frame nếu không kịp; theo lô (Video): xử lý mọi frame
         if efsource.is_stream(vpath):             # camera: thời lượng tối đa (phút) + không giả lập realtime
             from exhibitflow import settings as efs
             efs.RT['stream_max_sec'] = max(10.0, float(opts.get('camera_max_min') or 30) * 60)
-        pipe = {k: t(opts[k]) for k, t in PIPE_OPTS.items() if opts.get(k) is not None}
-        state.save_settings(dict(pipe, realtime=bool(opts.get('realtime'))))
+        pipe = pipe_of(opts)
+        state.save_settings(dict(pipe, realtime=realtime))
         try:
             runner.start(str(vpath))
         except RuntimeError as e:
             raise HTTPException(409, str(e))
         jid = uuid.uuid4().hex[:12]
         jobs[jid] = dict(id=jid, path=Path(vpath), name=name, t0=time.time(), cancelled=False, final=None, rdir=None,
-                         realtime=bool(opts.get('realtime')), vinfo=video_info(vpath))
+                         realtime=realtime, vinfo=video_info(vpath))
         cur['id'] = jid
-        return {'job_id': jid}
+        return jid
+
+    # ------------------------------------------------------------------ multi-camera (chạy tuần tự, xem exhibitflow/multicam.py)
+    def get_multi(mid):
+        mr = multis.get(mid)
+        if mr is None:
+            raise HTTPException(404, 'Không có lần multi-camera này')
+        return mr
+
+    @app.post('/api/multi-jobs')
+    async def create_multi(request: Request):
+        form = await request.form()
+        try:
+            opts = json.loads(form.get('options') or '{}')
+            specs = json.loads(form.get('cameras') or '[]')
+        except (json.JSONDecodeError, TypeError):
+            raise HTTPException(400, 'Danh sách camera không hợp lệ')
+        if not isinstance(specs, list) or not (multicam.MIN_CAMS <= len(specs) <= multicam.MAX_CAMS):
+            raise HTTPException(400, f'Cần từ {multicam.MIN_CAMS} đến {multicam.MAX_CAMS} camera')
+        if runner.running():
+            raise HTTPException(409, 'Pipeline đang chạy, đợi xong hoặc bấm Dừng.')
+        if runner.loading():
+            raise HTTPException(409, 'Model đang nạp (lần đầu mất vài phút), thử lại sau.')
+        cams = []
+        for i, sp in enumerate(specs):
+            sp = sp if isinstance(sp, dict) else {}
+            up = form.get(f'video_{i}')                # UploadFile của Starlette (không phải lớp con của fastapi.UploadFile)
+            if up is not None and getattr(up, 'filename', None):
+                vpath, label = await save_upload(up)
+            else:
+                src = str(sp.get('source') or '').strip()
+                if not src:
+                    raise HTTPException(400, f'Camera {i + 1} chưa có nguồn (URL RTSP, đường dẫn hoặc file)')
+                if src.lower().startswith('push://'):
+                    raise HTTPException(400, 'Multi-camera không nhận webcam của trình duyệt: dùng RTSP hoặc file video.')
+                vpath, label = resolve_source(src, uploads)
+            cams.append(dict(name=str(sp.get('name') or '').strip()[:40] or label, path=vpath))
+
+        maxp = min(max(1, int(opts.get('multi_max_parallel') or 2)), len(cams))
+        par = bool(opts.get('multi_parallel', True)) and maxp > 1
+        run_root = state.root / 'multi' / uuid.uuid4().hex[:12]     # thư mục của lần multi này (mỗi camera một thư mục con)
+        if par:
+            for i, c in enumerate(cams):
+                c['root'] = run_root / f'cam{i + 1}'
+            if runner.engine is not None:               # model của tiến trình chính nhường VRAM cho các tiến trình camera
+                runner.engine.close()
+                runner.engine = None
+                with state.lock:
+                    state.models_state = 'idle'
+
+        def launch_seq(c):
+            while runner.loading() or runner.running():     # luồng pipeline của camera trước phải hết hẳn mới mở camera kế
+                time.sleep(0.3)
+            return start_job(c['path'], c['name'], opts, realtime=efsource.is_stream(c['path']))
+
+        def launch_par(c):
+            """Camera chạy trong tiến trình riêng (cam_worker): cấu hình = cài đặt hiện tại + tuỳ chọn của lần này."""
+            realtime = efsource.is_stream(c['path'])
+            cfg = dict(root=str(c['root']), video=str(c['path']), demo=demo, local=local,
+                       settings=dict(state.settings, **pipe_of(opts), realtime=realtime),
+                       extra=dict(models=dict(vlm=dict(port=cam_worker.free_port()))),   # llama-server riêng cho từng camera
+                       flock=str(run_root / 'load.lock'),
+                       stream_max_sec=max(10.0, float(opts.get('camera_max_min') or 30) * 60) if realtime else None)
+            proc = cam_worker.CamProc(cfg)
+            jid = uuid.uuid4().hex[:12]
+            jobs[jid] = dict(id=jid, path=Path(c['path']), name=c['name'], t0=time.time(), cancelled=False, final=None, rdir=None,
+                             realtime=realtime, vinfo=video_info(c['path']), root=c['root'], remote=proc)
+            return jid
+
+        def release_par(jid):
+            j = jobs.get(jid)
+            if j is not None and j.get('remote') is not None:
+                j['remote'].close()
+
+        def poll(jid):
+            j = get_job(jid)
+            v = view(j)
+            key = None
+            if v['status'] == 'done':
+                rd = result_dir(j)
+                key = rd.name if rd else (state.cam_name if j.get('remote') is None else j['path'].stem) or j['path'].stem
+            return dict(status=v['status'], key=key, error=v['error'])
+
+        def alerts_of(jid, final):
+            j = get_job(jid)
+            if not final:
+                if j.get('remote') is not None:
+                    return multicam.from_live_alerts(j['remote'].snap()['alerts'])
+                with state.lock:
+                    return multicam.from_live_alerts(list(state.alerts))
+            rd = result_dir(j)
+            if rd is None or not (rd / 'result.json').is_file():
+                return None
+            return multicam.from_result_alerts(json.loads((rd / 'result.json').read_text(encoding='utf-8')))
+
+        def stop_cam(jid):
+            stop_job(get_job(jid))
+
+        mr = multicam.MultiRun(cams, launch=launch_par if par else launch_seq, poll=poll, stop=stop_cam, alerts_of=alerts_of,
+                               parallel=maxp if par else 1, release=release_par if par else None).start()
+        multis[mr.id] = mr
+        return {'multi_id': mr.id, 'cameras': [c['name'] for c in mr.cams], 'parallel': maxp if par else 1}
+
+    @app.get('/api/multi-jobs/{mid}')
+    def multi_status(mid: str):
+        return get_multi(mid).snapshot()
+
+    @app.get('/api/multi-jobs/{mid}/results')
+    def multi_results(mid: str):
+        """result.json của từng camera đã xong. Đọc thẳng từ thư mục kết quả (không qua get_result), vì job cũ đã bị coi là 'cancelled'
+        khi job con sau bắt đầu. Camera chưa có kết quả (lỗi / bỏ qua / demo) không có trong danh sách."""
+        out = []
+        for c in get_multi(mid).snapshot()['cams']:
+            j = jobs.get(c['job_id']) if c['job_id'] else None
+            rd = result_dir(j) if (j is not None and c['status'] == 'done') else None
+            if rd is not None and (rd / 'result.json').is_file():
+                out.append(dict(idx=c['idx'], name=c['name'], job_id=c['job_id'], key=rd.name,
+                                result=json.loads((rd / 'result.json').read_text(encoding='utf-8'))))
+        return out
+
+    @app.post('/api/multi-jobs/{mid}/finish')
+    def multi_finish(mid: str):
+        get_multi(mid).finish()
+        return {'status': 'finishing'}
 
     @app.get('/api/jobs/{jid}')
     def job_status(jid: str):
@@ -359,7 +531,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         v = view(j)
         if v['status'] in ('done', 'error', 'cancelled'):
             return {'status': v['status']}
-        runner.stop()
+        stop_job(j)
         return {'status': 'finishing'}
 
     @app.post('/api/jobs/{jid}/cancel')
@@ -369,15 +541,19 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         if v['status'] in ('done', 'error', 'cancelled'):
             return {'status': v['status']}
         j['cancelled'] = True
-        runner.stop()
+        stop_job(j)
         return {'status': 'cancelling'}
 
     # ------------------------------------------------------------------ phát trực tiếp
     @app.get('/api/jobs/{jid}/live')
     def live_frame(jid: str):
-        get_job(jid)
-        with state.lock:
-            jpg = state.frame_jpeg
+        j = get_job(jid)
+        if j.get('remote') is not None:
+            r = remote_frame(j, -1)
+            jpg = r['jpg'] if r else None
+        else:
+            with state.lock:
+                jpg = state.frame_jpeg
         if jpg is None:
             raise HTTPException(404, 'Chưa có khung hình')
         return Response(jpg, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
@@ -386,8 +562,23 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     async def live_stream(jid: str):
         """MJPEG (multipart/x-mixed-replace) như /api/stream của dashboard cũ: server đẩy mỗi khung mới ngay khi có, không bị trễ do web poll.
         Kết thúc khi pipeline xong và không còn khung mới (để <img> dừng)."""
-        import asyncio
         j = get_job(jid)
+        if j.get('remote') is not None:                 # camera chạy trong tiến trình riêng: lấy khung từ tiến trình đó
+            async def gen_remote():
+                last, idle = -1, 0
+                while True:
+                    r = await asyncio.to_thread(remote_frame, j, last)
+                    if r is None:
+                        return
+                    if r['jpg'] is not None:
+                        last, idle = r['seq'], 0
+                        yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(r['jpg'])).encode() + b'\r\n\r\n' + r['jpg'] + b'\r\n'
+                    else:
+                        idle += 1
+                        if r['st'] in ('done', 'error') and not r['alive'] and idle > 60:
+                            return
+                        await asyncio.sleep(0.03)
+            return StreamingResponse(gen_remote(), media_type='multipart/x-mixed-replace; boundary=frame', headers={'Cache-Control': 'no-store'})
 
         async def gen():
             last, idle = -1, 0
@@ -423,6 +614,8 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     @app.get('/api/jobs/{jid}/live/events')
     def live_events(jid: str, after: int = 0):
         j = get_job(jid)
+        if j.get('remote') is not None:                 # job con song song: không có sự kiện chi tiết theo khung (dùng trạng thái multi)
+            return {'meta': None, 'status': None, 'events': [], 'job': view(j)['status']}
         vi = vinfo_of(j)
         with state.lock:
             fi, nf, fps_now, alerts = state.frame_idx, state.n_frames, state.fps, list(state.alerts)

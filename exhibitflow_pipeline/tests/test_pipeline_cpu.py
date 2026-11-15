@@ -178,6 +178,177 @@ def test_camera_stream_source():
         assert source.INFO[str(stub)]['width'] == W
 
 
+def test_multi_camera_sequence():
+    """Multi-camera (MultiRun, chạy tuần tự) với engine thật: 2 camera = 2 video tổng hợp, thêm 1 camera lỗi.
+    Kiểm tra: 2 camera đầu đều có kết quả, camera lỗi không làm hỏng các camera khác, cảnh báo gộp mang đúng nhãn camera."""
+    from exhibitflow import run_pipeline
+    from exhibitflow.multicam import MultiRun, from_result_alerts
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        out = Path(tmp) / 'out'
+        ov = dict(models=dict(FAKE_MODELS, vlm=dict(backend='dry_run', delay_s=0.0)), rt=dict(queue_size=4, pose_gate_norm_dist=None))
+        paths = {}
+        for name in ('cam_a', 'cam_b'):
+            paths[name] = Path(tmp) / f'{name}.avi'
+            make_video(paths[name])
+
+        def launch(spec):
+            summary = run_pipeline([str(spec['path'])], out_dir=out, work_dir=Path(tmp) / 'work', overrides=ov)
+            if summary['errors']:
+                raise RuntimeError(str(summary['errors'][0])[:200])
+            return Path(spec['path']).stem
+
+        def alerts_of(jid, final):
+            if not final:
+                return []
+            p = out / jid / 'result.json'
+            return from_result_alerts(json.loads(p.read_text(encoding='utf-8'))) if p.exists() else None
+
+        specs = [dict(name='Cửa A', path=paths['cam_a']), dict(name='Cửa B', path=paths['cam_b']),
+                 dict(name='Hỏng', path=Path(tmp) / 'khong_co.avi')]
+        mr = MultiRun(specs, launch=launch, poll=lambda jid: dict(status='done', key=jid, error=None), stop=lambda jid: None,
+                      alerts_of=alerts_of, interval=0.01).start()
+        mr.thread.join(600)
+        snap = mr.snapshot()
+        assert snap['status'] == 'done', snap
+        assert [c['status'] for c in snap['cams']] == ['done', 'done', 'error'], snap['cams']
+        assert snap['cams'][2]['error'], snap['cams'][2]
+        assert {a['camera'] for a in snap['alerts']} == {'Cửa A', 'Cửa B'}, snap['alerts']
+        assert all(a['behavior'] == 'touching' and a['cam'] in (0, 1) for a in snap['alerts']), snap['alerts']
+        assert [c['n_alerts'] for c in snap['cams']][:2] == [sum(1 for a in snap['alerts'] if a['cam'] == i) for i in (0, 1)]
+
+
+def _parallel_cfg(tmp, name_dir, video):
+    """Cấu hình một tiến trình camera (cam_worker): model giả, VLM dry_run, thư mục gốc riêng."""
+    from dashboard.runner import DEFAULT_SETTINGS
+    return dict(root=str(tmp / 'multi' / name_dir), video=str(video), demo=False, local=False,
+                settings=dict(DEFAULT_SETTINGS, vlm_backend='dry_run', work_dir=str(tmp / 'work')),
+                extra=dict(models=FAKE_MODELS, rt=dict(pose_gate_norm_dist=None, queue_size=4)),
+                preload=['test_pipeline_cpu'], flock=str(tmp / 'load.lock'), stream_max_sec=None)
+
+
+def _parallel_result_alerts(root, final, p_live):
+    """Cảnh báo của một camera song song: đang chạy (từ tiến trình con) hoặc đã chốt (result.json trong thư mục gốc)."""
+    from exhibitflow.multicam import from_live_alerts, from_result_alerts
+    if not final:
+        return from_live_alerts(p_live.snap()['alerts'])
+    files = list((root / 'results').rglob('result.json'))
+    if not files:
+        return None
+    return from_result_alerts(json.loads(max(files, key=lambda f: f.stat().st_mtime).read_text(encoding='utf-8')))
+
+
+def test_parallel_cameras():
+    """Multi-camera SONG SONG (exhibitflow/cam_worker.py): 3 camera tổng hợp, mỗi camera một tiến trình con, thêm 1 camera lỗi (không có file).
+    Kiểm tra: (1) có lúc nhiều camera cùng đang chạy và cả 3 camera chạy chồng thời gian; (2) cảnh báo gộp mang đúng nhãn camera;
+    (3) camera lỗi không làm hỏng các camera khác; (4) xong thì mọi tiến trình con đã thoát (không mồ côi)."""
+    import time
+    from exhibitflow import cam_worker
+    from exhibitflow.multicam import MultiRun
+    os.environ['PYTHONPATH'] = os.pathsep.join([str(HERE), os.environ.get('PYTHONPATH', '')])
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        names = ['Cửa A', 'Cửa B', 'Cửa C']
+        specs = []
+        for i, nm in enumerate(names):
+            v = tmp / f'cam{i}.avi'
+            make_video(v)
+            specs.append(dict(name=nm, dir=f'cam{i}', path=v))
+        specs.append(dict(name='Hỏng', dir='bad', path=tmp / 'khong_co.avi'))
+        procs, roots = [], {}
+
+        def launch(spec):
+            p = cam_worker.CamProc(_parallel_cfg(tmp, spec['dir'], spec['path']))
+            procs.append(p)
+            roots[p] = tmp / 'multi' / spec['dir']
+            return p
+
+        def poll(p):
+            s = p.snap()
+            v = cam_worker.view_of(s)
+            return dict(status=v['status'], key=s['cam'], error=v['error'])
+
+        mr = MultiRun(specs, launch=launch, poll=poll, stop=lambda p: p.stop(),
+                      alerts_of=lambda p, final: _parallel_result_alerts(roots[p], final, p), interval=0.05,
+                      parallel=3, release=lambda p: p.close())
+        mr.start()
+        peak, deadline = 0, time.time() + 900
+        while mr.thread.is_alive() and time.time() < deadline:
+            peak = max(peak, len(mr.snapshot()['running']))
+            time.sleep(0.05)
+        assert not mr.thread.is_alive(), 'multi-camera song song không kết thúc'
+        snap = mr.snapshot()
+        assert snap['status'] == 'done', snap['status']
+        assert [c['status'] for c in snap['cams']] == ['done', 'done', 'done', 'error'], [c['status'] for c in snap['cams']]
+        assert snap['cams'][3]['error'], snap['cams'][3]
+        assert peak >= 2, f'không có camera nào chạy song song (peak={peak})'
+        good = snap['cams'][:3]
+        assert max(c['t0'] for c in good) < min(c['t1'] for c in good), 'ba camera không chạy chồng thời gian'
+        assert {a['camera'] for a in snap['alerts']} == set(names), snap['alerts']
+        assert all(a['camera'] == names[a['cam']] for a in snap['alerts']), snap['alerts']
+        assert all(p.proc.poll() is not None for p in procs), 'còn tiến trình con chưa thoát'
+        print(f'    peak={peak} camera chạy cùng lúc, cảnh báo: {len(snap["alerts"])}')
+
+
+def test_parallel_stop_and_cleanup():
+    """Dừng giữa chừng multi song song: camera chưa tới lượt bị bỏ qua, camera đang chạy xử lý nốt; không còn tiến trình con
+    (kể cả khi server tắt: close_all). Tiến trình con bị diệt đột ngột thì báo lỗi ngay, không treo."""
+    import signal
+    import time
+    from exhibitflow import cam_worker
+    from exhibitflow.multicam import MultiRun
+    os.environ['PYTHONPATH'] = os.pathsep.join([str(HERE), os.environ.get('PYTHONPATH', '')])
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        specs, procs, roots = [], [], {}
+        for i in range(3):
+            v = tmp / f'cam{i}.avi'
+            make_video(v)
+            specs.append(dict(name=f'C{i}', dir=f'cam{i}', path=v))
+
+        def launch(spec):
+            p = cam_worker.CamProc(_parallel_cfg(tmp, spec['dir'], spec['path']))
+            procs.append(p)
+            roots[p] = tmp / 'multi' / spec['dir']
+            return p
+
+        def poll(p):
+            s = p.snap()
+            v = cam_worker.view_of(s)
+            return dict(status=v['status'], key=s['cam'], error=v['error'])
+
+        mr = MultiRun(specs, launch=launch, poll=poll, stop=lambda p: p.stop(),
+                      alerts_of=lambda p, final: _parallel_result_alerts(roots[p], final, p), interval=0.05,
+                      parallel=2, release=lambda p: p.close())
+        mr.start()
+        deadline = time.time() + 300
+        while time.time() < deadline and len(mr.snapshot()['running']) < 2 and mr.thread.is_alive():
+            time.sleep(0.05)
+        mr.finish()
+        mr.thread.join(900)
+        assert not mr.thread.is_alive(), 'dừng giữa chừng mà multi không kết thúc'
+        snap = mr.snapshot()
+        assert snap['stop'] is True
+        assert [c['status'] for c in snap['cams']] == ['done', 'done', 'skipped'], [c['status'] for c in snap['cams']]
+        assert len(procs) == 2, 'camera chưa tới lượt không được khởi chạy'
+        assert all(p.proc.poll() is not None for p in procs), 'còn tiến trình con sau khi dừng'
+
+        # server tắt giữa chừng: close_all phải dọn mọi tiến trình con còn sống
+        alive = [cam_worker.CamProc(_parallel_cfg(tmp, f'shut{i}', tmp / 'cam0.avi')) for i in range(2)]
+        cam_worker.close_all()
+        assert all(p.proc.poll() is not None for p in alive), 'close_all không dọn hết tiến trình con'
+
+        # tiến trình con bị diệt đột ngột: lệnh phải báo lỗi ngay, không treo
+        p = cam_worker.CamProc(_parallel_cfg(tmp, 'kill', tmp / 'cam0.avi'))
+        os.kill(p.pid, signal.SIGKILL)
+        t0, raised = time.time(), False
+        try:
+            p.snap()
+        except Exception:  # noqa: BLE001 - kỳ vọng: lỗi kết nối / tiến trình đã thoát
+            raised = True
+        assert raised and time.time() - t0 < 30, 'tiến trình con đã chết mà lệnh không báo lỗi'
+        p.close()
+
+
 def test_helpers():
     from exhibitflow.vlm import adapt_task, parse_response
     from main import parse_set

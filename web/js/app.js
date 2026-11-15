@@ -164,7 +164,7 @@ const S={t:0,playing:false,speed:1,videoURL:null,file:null,filter:'all',loaded:f
   progress:0,srcName:'',layers:{boxes:true,skel:false,labels:true,art:false},mlayers:{trails:true,zones:true,heat:false}};
 const vid=$('#vid');
 let LIVE=null;
-S.mode=(()=>{try{const m=localStorage.getItem('ef_mode');return m==='rt'||m==='cam'?m:'batch'}catch{return 'batch'}})();S.liveSim=false;
+S.mode=(()=>{try{const m=localStorage.getItem('ef_mode');return ['rt','cam','multi'].includes(m)?m:'batch'}catch{return 'batch'}})();S.liveSim=false;
 const EMPTY={meta:{duration:60,camera_id:'',width:1280,height:720,nw:960},arts:[],tracks:[],events:[]};
 
 /* ---------- Backend ---------- */
@@ -195,7 +195,7 @@ const noisyLog=l=>/\d+%\||it\/s|s\/it|^Fetching \d+ files|\[\d+:\d+<|[█▏▎�
 function stageLine(j,seen){const n=(j.stages||[]).length,i=j.stage;if(j.status==='running'&&n&&i>=0&&i<n&&!seen.has('s'+i)){seen.add('s'+i);logLine(`[${i+1}/${n}] ${j.stages[i]}`)}}
 function logLine(m){const el=$('#srcmsg');el.textContent=m;el.className='srcmsg'+(/^(LỖI|Chưa)/.test(m)?' err':'')}
 function setStatus(t){$('#vstat').textContent=t}
-function setBusy(b){S.running=b;$('#modeSel').classList.toggle('lock',b);$('#runBtn').disabled=b;$('#stopBtn').disabled=!b;$('#uploadBtn').disabled=b;$('#src').disabled=b;$('#camKind').disabled=b;$('#rtspUrl').disabled=b;$('#stopBtn').textContent=b&&S.mode==='cam'?'Dừng & xem kết quả':'Dừng';
+function setBusy(b){S.running=b;$('#modeSel').classList.toggle('lock',b);$('#runBtn').disabled=b;$('#stopBtn').disabled=!b;$('#uploadBtn').disabled=b;$('#src').disabled=b;$('#camKind').disabled=b;$('#rtspUrl').disabled=b;$('#multiBox').classList.toggle('lock',b);$('#stopBtn').textContent=b&&(S.mode==='cam'||S.mode==='multi')?'Dừng & xem kết quả':'Dừng';
   if(b)$('#runBtn').textContent='Đang chạy…';else applySourceUI()}
 
 /* ---------- System status ---------- */
@@ -241,7 +241,7 @@ function renderAlerts(){
     const btn=e.review?`<span class="st">✓ ${e.review==='ok'?'Đã xác nhận':'Đã bỏ qua'}</span>`
       :`<button class="btn sm" data-seek="${e.start}">Xem lại</button>${(e.decision==='NORMAL'||e.provisional)?'':`<button class="btn sm" data-rv="ok" data-id="${e.id}">Xác nhận</button><button class="btn sm" data-rv="no" data-id="${e.id}">Bỏ qua</button>`}`;
     return`<div class="al" data-id="${e.id}" style="--c:${col}"><img src="${e.img}" data-seek="${e.start}" alt="">
-      <div><div class="hd"><span class="badge">${lab}</span><b>Visitor #${e.track}</b><span class="meta">→ ${esc(a.name)}</span></div>
+      <div><div class="hd"><span class="badge">${lab}</span><b>Visitor #${e.track}</b><span class="meta">${e.cam?esc(e.cam)+' · ':''}→ ${esc(a.name)}</span></div>
       <div class="meta">${fmt(e.start)}–${fmt(e.end)} · VLM tin cậy ${e.conf==null?'—':((e.conf*100)|0)+'%'}</div>
       <div class="why">“${esc(e.reason)}”</div><div class="acts">${btn}</div></div></div>`}).join('')}
 function renderTimeline(){const tl=$('#tl');tl.querySelectorAll('.seg').forEach(n=>n.remove());
@@ -444,12 +444,12 @@ async function runCamera(){
 }
 async function startAnalysis(){
   if(S.running)return;
-  const cam=S.mode==='cam',src=$('#src').value.trim();
-  if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
+  const cam=S.mode==='cam',multi=S.mode==='multi',src=$('#src').value.trim();
+  if(!cam&&!multi&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    if(API.ok)await(S.mode==='cam'?runCamera():S.mode==='rt'?runRealtime(src):runLive(src));
-    else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime():runDemo());
+    if(API.ok)await(multi?runMulti():cam?runCamera():S.mode==='rt'?runRealtime(src):runLive(src));
+    else if(CFG.demo&&!multi)await(S.mode==='rt'?runDemoRealtime():runDemo());
     else{setStatus('Mất kết nối');logLine('Chưa kết nối được server. Kiểm tra server còn chạy (Settings → Server).')}
   }catch(err){logLine('LỖI: '+err.message);setStatus('Lỗi')}
   finally{setBusy(false);pollSystem()}}
@@ -478,8 +478,8 @@ $('#filters').onclick=e=>{const b=e.target.closest('[data-f]');if(!b)return;S.fi
 $('#alerts').onclick=e=>{const sk=e.target.closest('[data-seek]');if(sk){seek(+sk.dataset.seek);return}
   const rv=e.target.closest('[data-rv]');if(rv){const ev=DATA.events.find(x=>x.id==rv.dataset.id);if(ev){ev.review=rv.dataset.rv;renderAlerts()}}};
 $('#csvBtn').onclick=()=>{
-  const rows=[['id','bat_dau_s','ket_thuc_s','khach','hien_vat','hanh_vi','quyet_dinh','tin_cay','ghi_chu_vlm']];
-  DATA.events.forEach(e=>{const a=DATA.arts.find(a=>a.id===e.art);rows.push([e.id,e.start.toFixed(2),e.end.toFixed(2),e.track,a?a.name:e.art,e.behavior,e.decision,e.conf==null?'':e.conf,e.reason])});
+  const rows=[['id','bat_dau_s','ket_thuc_s','khach','hien_vat','hanh_vi','quyet_dinh','tin_cay','ghi_chu_vlm','camera']];
+  DATA.events.forEach(e=>{const a=DATA.arts.find(a=>a.id===e.art);rows.push([e.id,e.start.toFixed(2),e.end.toFixed(2),e.track,a?a.name:e.art,e.behavior,e.decision,e.conf==null?'':e.conf,e.reason,e.cam||''])});
   const csv='﻿'+rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));a.download='exhibitflow_alerts.csv';a.click()};
 document.addEventListener('keydown',e=>{if(e.code==='Space'&&!$('#v-dash').hidden&&!/SELECT|INPUT|BUTTON|TEXTAREA/.test(e.target.tagName)){e.preventDefault();$('#play').click()}});
@@ -491,7 +491,7 @@ $('#beOff').onclick=async()=>{API.base='';$('#beUrl').value='';try{localStorage.
 $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
-const PIPE_DEF={camera_max_min:30,pipeline_mode:'full',tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
+const PIPE_DEF={multi_parallel:true,multi_max_parallel:2,camera_max_min:30,pipeline_mode:'full',tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
   tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5};
 const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
 const pipeOpts=()=>({...PIPE});
@@ -521,15 +521,108 @@ async function loadCores(){
     ['tracker','hand','pose'].forEach(k=>{const el2=$('#p-'+k+'_threads');if(el2){el2.max=CORES.n;if(+el2.value>CORES.n){el2.value=CORES.n;PIPE[k+'_threads']=CORES.n;savePipe()}}});
     checkThreads()}catch{}}
 function applySourceUI(){
-  const cam=S.mode==='cam';
-  $('#srcFile').hidden=cam;$('#srcCam').hidden=!cam;$('#rtspUrl').hidden=!(cam&&$('#camKind').value==='rtsp');
-  $('#runBtn').textContent=cam?'Bật camera':S.mode==='rt'?'Bắt đầu':'Phân tích';
-  $('#vtitle').textContent=cam?'Camera trực tiếp':S.mode==='rt'?'Video realtime':'Video phân tích'}
+  const cam=S.mode==='cam',multi=S.mode==='multi';
+  $('#srcFile').hidden=cam||multi;$('#srcCam').hidden=!cam;$('#rtspUrl').hidden=!(cam&&$('#camKind').value==='rtsp');
+  $('#multiBox').hidden=!multi;if(!multi)$('#multiStat').hidden=true;
+  $('#runBtn').textContent=multi?'Bật multi-camera':cam?'Bật camera':S.mode==='rt'?'Bắt đầu':'Phân tích';
+  $('#vtitle').textContent=multi?'Multi-camera':cam?'Camera trực tiếp':S.mode==='rt'?'Video realtime':'Video phân tích'}
 $('#camKind').onchange=applySourceUI;
 try{$('#rtspUrl').value=localStorage.getItem('ef_rtsp')||''}catch{}
 
+/* ---------- Multi-Camera: 2-8 camera chạy TUẦN TỰ trên server (xem exhibitflow/multicam.py) ---------- */
+const MCAM={min:2,max:8};
+let MROWS=[];                       /* [{name, source, file}]: file chỉ giữ trong bộ nhớ, không lưu localStorage */
+let MPICK=-1;                       /* dòng đang chọn file */
+let MSEL=null;                      /* camera người dùng bấm để xem trực tiếp (null = camera đang chạy đầu tiên) */
+const MSTAT_TXT={pending:'chờ tới lượt',running:'đang chạy',done:'xong',error:'lỗi',skipped:'bỏ qua'};
+function saveMulti(){try{localStorage.setItem('ef_multi',JSON.stringify(MROWS.map(r=>({name:r.name,source:r.source}))))}catch{}}
+function renderMultiRows(){
+  const box=$('#multiRows');box.innerHTML='';
+  MROWS.forEach((r,i)=>{
+    const row=document.createElement('div');row.className='mrow';
+    const idx=document.createElement('span');idx.className='midx';idx.textContent=i+1;
+    const nm=document.createElement('input');nm.className='txt mname';nm.placeholder='Tên camera';nm.maxLength=40;nm.value=r.name;
+    nm.oninput=()=>{r.name=nm.value;saveMulti()};
+    const fn=document.createElement('span');fn.className='mfname';fn.textContent=r.file?r.file.name:'';
+    const sc=document.createElement('input');sc.className='txt msrc';sc.spellcheck=false;sc.value=r.source;
+    sc.placeholder='rtsp://user:pass@ip:554/stream, hoặc đường dẫn / URL video';
+    sc.oninput=()=>{r.source=sc.value;if(r.file){r.file=null;fn.textContent=''}saveMulti()};
+    const pick=document.createElement('button');pick.className='btn sm';pick.textContent='Chọn file';pick.title='Upload video từ máy thay cho nguồn';
+    pick.onclick=()=>{MPICK=i;$('#multiFile').click()};
+    const del=document.createElement('button');del.className='btn sm';del.textContent='Xoá';del.disabled=MROWS.length<=MCAM.min;
+    del.onclick=()=>{MROWS.splice(i,1);saveMulti();renderMultiRows()};
+    row.append(idx,nm,sc,pick,fn,del);box.append(row)});
+  $('#multiAdd').disabled=MROWS.length>=MCAM.max;
+  $('#multiNote').textContent=`${MROWS.length} camera (tối thiểu ${MCAM.min}, tối đa ${MCAM.max}). Camera IP chạy mỗi lượt tối đa theo "thời lượng tối đa" ở Settings, rồi chuyển sang camera kế tiếp.`}
+function loadMulti(){let a=[];try{a=JSON.parse(localStorage.getItem('ef_multi')||'[]')}catch{a=[]}
+  MROWS=(Array.isArray(a)?a:[]).filter(x=>x&&typeof x==='object').slice(0,MCAM.max).map(x=>({name:String(x.name||''),source:String(x.source||''),file:null}));
+  while(MROWS.length<MCAM.min)MROWS.push({name:'',source:'',file:null});
+  renderMultiRows()}
+$('#multiAdd').onclick=()=>{if(MROWS.length<MCAM.max){MROWS.push({name:'',source:'',file:null});saveMulti();renderMultiRows()}};
+$('#multiFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f&&MROWS[MPICK]){MROWS[MPICK].file=f;MROWS[MPICK].source='';saveMulti();renderMultiRows()}};
+function multiForm(){
+  const fd=new FormData(),cams=[];
+  MROWS.forEach((r,i)=>{
+    const src=r.source.trim();
+    if(!r.file&&!src)throw new Error(`Camera ${i+1} chưa có nguồn (URL RTSP, đường dẫn hoặc file)`);
+    cams.push({name:r.name.trim()||(r.file?r.file.name:`Camera ${i+1}`),source:r.file?'':src});
+    if(r.file)fd.append('video_'+i,r.file)});
+  fd.append('cameras',JSON.stringify(cams));
+  return fd}
+function renderMultiStat(m){const el=$('#multiStat');el.hidden=false;el.innerHTML='';
+  m.cams.forEach(c=>{const d=document.createElement('div');d.className='mst '+c.status+(MSEL===c.idx?' sel':'');
+    d.title=c.job_id?'Bấm để xem trực tiếp camera này':'';d.onclick=()=>{MSEL=c.idx;renderMultiStat(m)};
+    d.textContent=`${c.idx+1}. ${c.name}: ${MSTAT_TXT[c.status]||c.status}${c.n_alerts?` · ${c.n_alerts} cảnh báo`:''}${c.error?` · ${c.error}`:''}`;el.append(d)})}
+/* Cảnh báo đang có (mọi camera) -> danh sách; giữ trạng thái "đã xác nhận / bỏ qua" theo khoá (camera|khách|thời điểm) */
+function setMultiLive(m){
+  const old=new Map(DATA.events.map(e=>[e.key,e]));
+  DATA.events=m.alerts.map((a,i)=>{const key=`${a.camera}|${a.track}|${a.t_s}|${a.behavior}`,o=old.get(key);
+    return{id:'L'+i,key,track:a.track,art:a.art,start:a.t_s||0,end:(a.t_s||0)+1,behavior:a.behavior,decision:'ANOMALY',conf:a.confidence,
+      reason:a.evidence||'VLM kết luận có hành vi bất thường.',review:o?o.review:null,img:o?o.img:null,cam:a.camera}});
+  const nrun=(m.running||[]).length;
+  $('#rthud').textContent=`MULTI · ${nrun} camera đang chạy · ${m.alerts.length} cảnh báo`;
+  renderAll()}
+async function runMulti(){
+  let fd;try{fd=multiForm()}catch(e){setStatus('Chưa đủ nguồn');logLine(e.message);return}
+  fd.append('options',JSON.stringify({conf:+$('#conf').value,...pipeOpts(),realtime:true}));
+  setStatus('Multi-camera: khởi động');logLine(`Multi-camera: gửi ${MROWS.length} camera tới backend…`);
+  MSEL=null;
+  const mid=(await(await API.f('/api/multi-jobs',{method:'POST',body:fd})).json()).multi_id;S.jobId=mid;
+  prepareLiveView(`Multi-camera · ${MROWS.length} camera`);$('#rthud').textContent='MULTI · đang khởi động…';
+  LIVE={id:mid,after:0,meta:null,banner:null};
+  const img=$('#liveimg');let curJid=null,m=null,sentStop=false;
+  try{
+    for(;;){
+      if(S.cancel&&!sentStop){sentStop=true;logLine('Đang dừng: camera đang chạy được xử lý nốt, các camera còn lại bỏ qua…');setStatus('Đang xử lý kết quả');
+        await API.f(`/api/multi-jobs/${mid}/finish`,{method:'POST'}).catch(()=>{})}
+      m=await(await API.f(`/api/multi-jobs/${mid}`)).json();
+      /* Khung trực tiếp: camera người dùng chọn (nếu đã có job), không thì camera đang chạy đầu tiên */
+      const sel=(MSEL!=null&&m.cams[MSEL]&&m.cams[MSEL].job_id)?m.cams[MSEL]:null;
+      const c=sel||(m.cur!=null?m.cams[m.cur]:null);
+      if(c&&c.job_id&&c.job_id!==curJid){curJid=c.job_id;img.src=API.base+`/api/jobs/${curJid}/live/stream?`+Date.now();logLine(`Xem trực tiếp ${c.name}`)}
+      renderMultiStat(m);setMultiLive(m);
+      if(m.status!=='running')break;
+      await sleep(1000)}
+  }finally{if(LIVE&&LIVE.id===mid)LIVE=null}
+  const parts=await(await API.f(`/api/multi-jobs/${mid}/results`)).json();
+  if(!parts.length){resetData();setStatus(m.status==='error'?'Lỗi':'Đã dừng');
+    logLine(m.cams.map(c=>`${c.name}: ${MSTAT_TXT[c.status]||c.status}${c.error?' — '+c.error:''}`).join(' | '));return}
+  /* Gộp kết quả: id và hiện vật thêm tiền tố camera để không trùng; cảnh báo mang nhãn camera. Không có video xem lại (nhiều nguồn) */
+  const arts=[],events=[];let dur=0;
+  for(const c of parts){
+    const res=c.result,imgs={};
+    await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(c.job_id,`files/${c.key}/vlm_inputs/${e.task}/sheet.jpg`)}));
+    const d=fromResult(res,e=>imgs[e.event_id]);
+    arts.push(...d.arts.map(a=>({...a,id:`${c.idx}.${a.id}`,name:`${a.name} · ${c.name}`})));
+    events.push(...d.events.map(e=>({...e,id:`${c.idx}.${e.id}`,art:e.art==null?null:`${c.idx}.${e.art}`,cam:c.name})));
+    dur=Math.max(dur,d.meta.duration||0)}
+  S.progress=100;
+  loadData({real:true,raw:null,meta:{sequence_id:'multi-'+mid,camera_id:`${parts.length} camera`,duration:dur||60,fps:25,width:960,height:540,nw:960},arts,tracks:[],events},null,{name:`Multi-camera (${parts.length} camera)`});
+  setStatus(m.status==='error'?'Hoàn tất (có camera lỗi)':'Hoàn tất');
+  logLine('Hoàn tất multi-camera: '+m.cams.map(c=>`${c.name} ${MSTAT_TXT[c.status]||c.status}`).join(', ')+'. Multi-camera không có video xem lại; cảnh báo có nhãn camera.')}
+
 /* ---------- Khởi động ---------- */
-resetData();renderSystem();setStatus('Chưa chạy');setMode(S.mode);
+resetData();renderSystem();setStatus('Chưa chạy');loadMulti();setMode(S.mode);
 logLine('Sẵn sàng.'+(CFG.demo?' Chế độ demo: chưa kết nối backend thì kết quả là dữ liệu mẫu.':''));
 setInterval(()=>{$('#clock').textContent=new Date().toLocaleString('vi-VN')},1000);$('#clock').textContent=new Date().toLocaleString('vi-VN');
 setInterval(pollSystem,3000);

@@ -41,7 +41,7 @@
   <div class="grid">
     <div class="col">
       <div class="card">
-        <h3><span id="vtitle">Video phân tích</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Camera: webcam của máy hoặc camera RTSP, chạy liên tục tới khi bấm Dừng. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button><button class="tg" data-mode="cam">Camera</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
+        <h3><span id="vtitle">Video phân tích</span> <span class="sp"></span><div class="filters" id="modeSel" title="Video: chạy hết video rồi hiện kết quả. Realtime: chạy đúng nhịp fps, cảnh báo hiện dần. Camera: webcam của máy hoặc camera RTSP, chạy liên tục tới khi bấm Dừng. Multi-Camera: 2-8 camera chạy tuần tự, cảnh báo gộp theo camera"><button class="tg on" data-mode="batch">Video</button><button class="tg" data-mode="rt">Realtime</button><button class="tg" data-mode="cam">Camera</button><button class="tg" data-mode="multi">Multi-Camera</button></div><span class="vstat" id="vstat">Chưa chạy</span></h3>
         <div class="srcrow">
           <div class="srcvar" id="srcFile">
             <input id="src" class="txt" type="text" placeholder="Đường dẫn file / thư mục (trên server) hoặc URL video (.mp4 ...)" spellcheck="false">
@@ -54,6 +54,12 @@
           </div>
           <button class="btn pri" id="runBtn">Phân tích</button>
           <button class="btn stop" id="stopBtn" disabled>Dừng</button>
+        </div>
+        <div class="multibox" id="multiBox" hidden>
+          <div id="multiRows"></div>
+          <div class="mactions"><button class="btn sm" id="multiAdd">+ Thêm camera</button><span class="note" id="multiNote">Tối thiểu 2, tối đa 8 camera. Camera IP chạy mỗi lượt tối đa theo "thời lượng tối đa" ở Settings, rồi chuyển sang camera kế tiếp.</span></div>
+          <div class="mstat" id="multiStat" hidden></div>
+          <input type="file" id="multiFile" accept="video/*" hidden>
         </div>
         <div class="srcmsg" id="srcmsg"></div>
         <div class="vbar"><div class="live grn" id="live" hidden></div><div class="rthud" id="rthud" hidden></div></div>
@@ -141,6 +147,8 @@
       <div class="chk"><label><input type="checkbox" id="p-limit_cpu_threads"> Giới hạn 1 luồng CPU mỗi stage (máy ít nhân)</label></div>
       <div class="opt"><label>Giữ khung đỏ cảnh báo (giây)</label><input type="number" id="p-alarm_show_sec" class="txt" step="0.5" min="0" value="4"></div>
       <div class="opt"><label>Camera: thời lượng tối đa mỗi lần chạy (phút)</label><input type="number" id="p-camera_max_min" class="txt" step="1" min="1" max="240" value="30"></div>
+      <div class="chk"><label><input type="checkbox" id="p-multi_parallel" checked> Multi-camera: chạy các camera SONG SONG (mỗi camera một tiến trình, tốn thêm VRAM/RAM mỗi camera)</label></div>
+      <div class="opt"><label>Multi-camera: số camera chạy cùng lúc tối đa (camera còn lại chờ tới lượt)</label><input type="number" id="p-multi_max_parallel" class="txt" step="1" min="1" max="8" value="2"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình tracker</label><input type="number" id="p-tracker_threads" class="txt" step="1" min="1" max="64" value="1"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình hand (torch/OpenCV; onnxruntime tự chọn)</label><input type="number" id="p-hand_threads" class="txt" step="1" min="1" max="64" value="1"></div>
       <div class="opt"><label>Số luồng CPU của tiến trình pose</label><input type="number" id="p-pose_threads" class="txt" step="1" min="1" max="64" value="4"></div>
