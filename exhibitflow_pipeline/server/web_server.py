@@ -72,6 +72,17 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             return _orig_run_video(*a, **k)
 
         svc.run_video = _run_video_with_live
+
+        # engine vẽ 3 dòng thông số (frame / FPS / VLM queue) vào live.mp4: bỏ chúng đi, giữ nguyên khung người, ID và nhãn
+        import exhibitflow.engine as eng_mod
+        _orig_put_label = eng_mod.put_label
+
+        def _put_label_no_hud(img, text, *a, **k):
+            if isinstance(text, str) and text.startswith(('frame ', 'pipeline ', 'VLM queue')):
+                return None
+            return _orig_put_label(img, text, *a, **k)
+
+        eng_mod.put_label = _put_label_no_hud
     if preload:
         runner.preload()                   # nạp model một lần ngay khi server lên
 
