@@ -448,6 +448,33 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def sites():
         return list(site_runner.list_sites().values())
 
+    @app.post('/api/site-match')
+    async def site_match(request: Request):
+        """Nhận diện địa điểm + camera từ vài khung hình của mỗi video. Form: v<i>_<j> = ảnh JPEG j của video i.
+        Trả {matched, site_id, name, assign: {chỉ số video: id camera}}. Không khớp (hoặc server chưa có repo) thì matched=false."""
+        import cv2
+        import numpy as np
+        form = await request.form()
+        groups = {}
+        for key, up in form.multi_items():
+            if not (key.startswith('v') and '_' in key and hasattr(up, 'read')):
+                continue
+            try:
+                i = int(key[1:].split('_')[0])
+                img = cv2.imdecode(np.frombuffer(await up.read(), np.uint8), cv2.IMREAD_COLOR)
+            except Exception:                              # noqa: BLE001
+                continue
+            if img is not None:
+                groups.setdefault(i, []).append(img)
+        n = (max(groups) + 1) if groups else 0
+        if not n or site_runner.find_repo() is None:
+            return {'matched': False}
+        r = site_runner.match_images([groups.get(i, []) for i in range(n)])
+        if not r:
+            return {'matched': False}
+        return {'matched': True, 'site_id': r['site_id'], 'name': r['name'], 'assign': {str(i): c for i, c in r['assign'].items()},
+                'scores': {str(i): v for i, v in r['scores'].items()}}
+
     @app.post('/api/site-jobs')
     async def create_site_job(request: Request):
         """Form: site=<id>; mỗi camera một tệp video, tên trường = id camera (C1, C2...)."""

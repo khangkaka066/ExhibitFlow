@@ -177,7 +177,7 @@ const API={base:(()=>{try{return localStorage.getItem('ef_api')||''}catch{return
     const c=$('#beChip');c.classList.toggle('ok',this.ok);c.classList.toggle('bad',!this.ok);
     c.querySelector('span').textContent=this.ok?'Đã kết nối':'Mất kết nối';
     $('#beMsg').textContent=this.ok?'đã kết nối ✓':(this.base?'không kết nối được':'chưa kết nối');
-    pollSystem();if(typeof loadSites==='function')loadSites()},
+    pollSystem()},
   async system(){return (await this.f('/api/system')).json()},
   async start(fd){return (await (await this.f('/api/jobs',{method:'POST',body:fd})).json()).job_id},
   async job(id){return (await this.f(`/api/jobs/${id}`)).json()},
@@ -448,7 +448,9 @@ async function startAnalysis(){
   if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>=1&&$('#siteSel').value)await runSite(S.files,$('#siteSel').value);
+    let site=null;
+    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>=1){logLine('Đang nhận diện camera…');setStatus('Nhận diện camera');site=await matchSite(S.files)}
+    if(site)await runSite(S.files,site);
     else if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
     else if(API.ok)await(S.mode==='rt'?runRealtime(src,cam):runLive(src));
     else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime(cam):runDemo());
@@ -476,28 +478,29 @@ async function runMulti(files){
     CAMRES.push(camSnap(files[i].name));CAMIDX=CAMRES.length-1;renderCamTabs()}
   if(CAMRES.length){showCam(0);setStatus(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera`:'Hoàn tất');logLine(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera: bấm CAM 1, CAM 2... để xem từng camera.`:'Hoàn tất.')}}
 
-/* ---------- Địa điểm đã hiệu chuẩn: ghép nhiều camera thành MỘT map (multicam-2d-floorplan-tracker) ---------- */
+/* ---------- Tự nhận diện camera đã hiệu chuẩn và ghép nhiều camera thành MỘT map (multicam-2d-floorplan-tracker) ---------- */
 const SITE_COLORS=['#5B9BEA','#3DDC97','#FFA040','#B388FF','#FF6B8A','#4DD0E1','#FFD54F'];
-let SITES=[],SITEDATA=null;
-async function loadSites(){const s=$('#siteSel');if(!s)return;
-  try{SITES=API.ok?await(await API.f('/api/sites')).json():[]}catch{SITES=[]}
-  s.innerHTML='<option value="">Địa điểm: không (mỗi camera một map)</option>'+SITES.map(x=>`<option value="${esc(x.site_id)}">${esc(x.name)}</option>`).join('');
-  s.hidden=!SITES.length;try{const v=localStorage.getItem('ef_site');if(v&&SITES.some(x=>x.site_id===v))s.value=v}catch{}}
-$('#siteSel').onchange=()=>{try{localStorage.setItem('ef_site',$('#siteSel').value)}catch{}};
+let SITEDATA=null;
 async function blobUrl(path){try{return URL.createObjectURL(await(await API.f(path)).blob())}catch{return null}}
-function assignCams(files,site){          // gán video vào camera: theo số trong tên file (cam1, C2...), còn lại theo thứ tự
-  const free=[...site.cameras],out=[],rest=[];
-  for(const f of files){const m=f.name.match(/(?:^|[^a-z0-9])c(?:am)?[ _-]?(\d+)/i),id=m&&'C'+m[1],i=id?free.indexOf(id):-1;
-    if(i>=0){out.push({cam:id,file:f});free.splice(i,1)}else rest.push(f)}
-  for(const f of rest){if(!free.length)break;out.push({cam:free.shift(),file:f})}
-  return out.sort((a,b)=>site.cameras.indexOf(a.cam)-site.cameras.indexOf(b.cam))}
-async function runSite(files,siteId){
-  const site=SITES.find(s=>s.site_id===siteId),map=assignCams(files,site);
-  if(!map.length)throw new Error('Không gán được video vào camera của địa điểm này');
-  if(files.length>map.length)logLine(`Địa điểm ${site.name} chỉ có ${site.cameras.length} camera: bỏ qua ${files.length-map.length} video thừa.`);
+async function grabFrames(file){          // 3 khung hình nhỏ (15%, 50%, 85% thời lượng) để server nhận diện camera
+  const url=URL.createObjectURL(file),v=document.createElement('video');v.muted=true;v.preload='auto';v.src=url;
+  try{await new Promise((ok,no)=>{v.onloadedmetadata=ok;v.onerror=()=>no(0);setTimeout(()=>no(0),15000)});
+    const out=[],c=document.createElement('canvas');c.width=640;c.height=360;const x=c.getContext('2d');
+    for(const p of [.15,.5,.85]){v.currentTime=Math.max(0,(v.duration||0)*p);await new Promise((ok,no)=>{v.onseeked=ok;setTimeout(()=>no(0),10000)});
+      x.drawImage(v,0,0,640,360);const b=await new Promise(r=>c.toBlob(r,'image/jpeg',.85));if(b)out.push(b)}
+    return out}catch{return[]}finally{URL.revokeObjectURL(url)}}
+async function matchSite(files){          // trả về {site_id,name,assign:{chỉ số video:id camera}} hoặc null nếu không nhận ra
+  try{const fd=new FormData();let n=0;
+    for(let i=0;i<files.length;i++)(await grabFrames(files[i])).forEach((b,j)=>{fd.append(`v${i}_${j}`,b,`f${i}_${j}.jpg`);n++});
+    if(!n)return null;
+    const r=await(await API.f('/api/site-match',{method:'POST',body:fd})).json();return r&&r.matched?r:null}catch{return null}}
+const camNum=id=>(String(id).match(/\d+/)||[0])[0]*1;
+async function runSite(files,m){
+  const map=Object.keys(m.assign).map(Number).map(i=>({cam:m.assign[i],file:files[i]})).sort((a,b)=>camNum(a.cam)-camNum(b.cam)),skipped=files.length-map.length;
+  const label=id=>'CAM '+(camNum(id)||id);
   CAMRES=[];CAMIDX=-1;renderCamTabs();resetMap();
-  const fd=new FormData();fd.append('site',siteId);map.forEach(m=>fd.append(m.cam,m.file));
-  logLine(map.map(m=>`${site.labels[m.cam]||m.cam} ← ${m.file.name}`).join(' · '));setStatus('Ghép camera');
+  const fd=new FormData();fd.append('site',m.site_id);map.forEach(x=>fd.append(x.cam,x.file));
+  logLine(`Nhận ra ${m.name}: `+map.map(x=>`${x.file.name} → ${label(x.cam)}`).join(' · ')+(skipped?` (bỏ qua ${skipped} video không khớp)`:''));setStatus('Ghép camera');
   const id=(await(await API.f('/api/site-jobs',{method:'POST',body:fd})).json()).job_id;S.jobId=id;
   for(;;){
     if(S.cancel){logLine('Đã dừng. Server vẫn xử lý xong lượt ghép hiện tại.');return stopped()}
@@ -510,12 +513,12 @@ async function runSite(files,siteId){
   const res=await(await API.f(`/api/site-jobs/${id}/result`)).json();
   SITEDATA={bounds:res.bounds,cams:res.cameras,frames:res.frames,fps:res.fps};
   const dur=res.frames.length/(res.fps||1);
-  for(const m of map){
-    const data={real:true,raw:null,meta:{duration:dur,camera_id:m.file.name,width:1920,height:1080,nw:960},arts:[],tracks:[],events:[]};
-    CAMRES.push({name:m.file.name,label:site.labels[m.cam]||m.cam,cam:m.cam,data,videoURL:await blobUrl(`/api/site-jobs/${id}/video/${m.cam}`),map:MAP})}
-  showCam(0);setStatus(`Hoàn tất ${CAMRES.length} camera`);
+  for(const x of map){
+    const data={real:true,raw:null,meta:{duration:dur,camera_id:x.file.name,width:1920,height:1080,nw:960},arts:[],tracks:[],events:[]};
+    CAMRES.push({name:x.file.name,label:label(x.cam),cam:x.cam,data,videoURL:await blobUrl(`/api/site-jobs/${id}/video/${x.cam}`),map:MAP})}
+  showCam(0);setStatus(map.length>1?`Hoàn tất ${map.length} camera`:'Hoàn tất');
   const ids=new Set(res.frames.flatMap(f=>f.people.map(p=>p.id)));
-  logLine(`Hoàn tất: ${CAMRES.length} camera ghép thành một map chung, ${ids.size} người (ID chung).`);return true}
+  logLine(map.length>1?`Hoàn tất: ${map.length} camera ghép thành một map chung, ${ids.size} người (ID chung).`:`Hoàn tất: map từ 1 camera, ${ids.size} người.`);return true}
 function siteFrameAt(t){const F=SITEDATA.frames;let lo=0,hi=F.length-1;if(!F.length||t<F[0].t)return -1;
   while(lo<hi){const m=(lo+hi+1)>>1;F[m].t<=t?lo=m:hi=m-1}return lo}
 function drawSiteMap(c,t){

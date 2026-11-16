@@ -463,4 +463,3 @@ html,body{color:var(--text)}
 .camtabs .tg{border:1px solid #323B45;border-radius:4px;padding:3px 11px;background:transparent;color:var(--muted)}
 .camtabs .tg:hover{border-color:var(--accent)}
 .camtabs .tg.on{background:var(--accent);border-color:var(--accent);color:#1A0C02}
-#siteSel{flex:0 0 auto;max-width:240px}

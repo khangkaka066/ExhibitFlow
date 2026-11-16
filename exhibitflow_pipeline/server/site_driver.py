@@ -65,7 +65,7 @@ def build_inputs(dataset, output):
             calibration_image_size=[c['width'], c['height']], calibration_source='site calibration (K, R, t)',
             camera_position_status='calibrated', visibility_polygon=poly.tolist())
     allp = np.vstack(polys + [np.array([v['camera_center_world'][:2] for v in cams.values()])])
-    pad = 2.0
+    pad = 12.0                                                                # lề rộng: người ở xa vẫn nằm trong vùng hợp lệ
     x0, y0 = allp.min(0) - pad
     x1, y1 = allp.max(0) + pad
     polygon = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]                       # CCW, hình chữ nhật bao vùng quan sát
@@ -81,6 +81,66 @@ def build_inputs(dataset, output):
     save_json(output / 'map_config.json', config)
     save_json(output / 'dataset_profile.json', dataset.profile())
     return transforms, config
+
+
+def collect_people(records, cam_polys=None, gate_m=1.6, keep_frames=8):
+    """Người theo từng mẫu thời gian: người ĐÃ HỢP NHẤT của repo (>=2 camera thấy cùng người, giữ ID của repo) cộng với
+    những người CHỈ MỘT camera thấy. `fuse_and_track` của repo chỉ tạo người từ nhóm >=2 camera, nên với 1 camera (hoặc người
+    nằm ngoài vùng chồng lấp) nó không ra ai; các phát hiện đơn đã chiếu xuống mặt đất (display_accepted) được theo dõi
+    bằng ghép gần nhất theo vị trí (Hungarian, ngưỡng gate_m mét) để có ID ổn định."""
+    import cv2
+    from scipy.optimize import linear_sum_assignment
+    polys = {c: np.asarray(p, np.float32) for c, p in (cam_polys or {}).items()}
+
+    def covered_by(x, y):                          # có bao nhiêu camera nhìn thấy điểm mặt đất này
+        return sum(cv2.pointPolygonTest(p, (float(x), float(y)), False) >= 0 for p in polys.values())
+
+    min_cover = 0 if len(polys) <= 1 else 1        # 1 camera: nhận cả người ngoài vùng nhìn gần (xa hơn); nhiều camera: chỉ vùng đúng một camera
+    ids, nxt = {}, [1]
+    singles = {}                                   # khoá theo dõi -> (xy cuối, chỉ số mẫu cuối thấy)
+
+    def new_id():
+        v = nxt[0]
+        nxt[0] += 1
+        return v
+
+    frames = []
+    for k, r in enumerate(records):
+        people, used = [], set()
+        for p in r.get('fused_people', []):
+            if p.get('xy') is None:
+                continue
+            used.update(p.get('member_detection_ids', []))
+            used.update(p.get('candidate_detection_ids', []))
+            pid = ids.setdefault(('f', p.get('id')), new_id())
+            people.append(dict(id=pid, x=round(float(p['xy'][0]), 3), y=round(float(p['xy'][1]), 3), cams=list(p.get('member_cameras', []))))
+        # người đơn lẻ: chỉ nhận ở vùng đúng MỘT camera nhìn thấy (ngoài mọi vùng nhìn thì điểm chiếu không đáng tin, vùng chồng lấp thì tin kết quả hợp nhất của repo)
+        dets = [d for d in r.get('detections', []) if d.get('display_accepted') and d.get('detection_id') not in used
+                and min_cover <= covered_by(d['xy'][0], d['xy'][1]) <= 1]
+        keys = [key for key, (_, last) in singles.items() if k - last <= keep_frames]
+        if dets and keys:
+            cost = np.array([[np.hypot(d['xy'][0] - singles[key][0][0], d['xy'][1] - singles[key][0][1]) for key in keys] for d in dets])
+            rows, cols = linear_sum_assignment(cost)
+            match = {int(i): keys[j] for i, j in zip(rows, cols) if cost[i, j] <= gate_m}
+        else:
+            match = {}
+        for i, d in enumerate(dets):
+            key = match.get(i)
+            if key is None:
+                key = ('s', len(singles))
+            singles[key] = ((float(d['xy'][0]), float(d['xy'][1])), k)
+            pid = ids.setdefault(key, new_id())
+            people.append(dict(id=pid, x=round(float(d['xy'][0]), 3), y=round(float(d['xy'][1]), 3), cams=[d['camera']]))
+        frames.append(dict(t=round(r['time_seconds'], 3), people=people))
+    # bỏ các "người" chỉ nhấp nháy dưới 3 mẫu (nhiễu phát hiện), giữ ID còn lại
+    seen = {}
+    for fr in frames:
+        for pr in fr['people']:
+            seen[pr['id']] = seen.get(pr['id'], 0) + 1
+    if len(frames) >= 4:
+        for fr in frames:
+            fr['people'] = [pr for pr in fr['people'] if seen[pr['id']] >= 3]
+    return frames
 
 
 def main():
@@ -105,11 +165,7 @@ def main():
     room = config['rooms'][0]
     xs, ys = [p[0] for p in room['polygon']], [p[1] for p in room['polygon']]
     fps = dataset.cameras[0]['fps']
-    frames = []
-    for r in records:
-        people = [dict(id=p.get('id', p.get('track_id')), x=round(float(p['xy'][0]), 3), y=round(float(p['xy'][1]), 3),
-                       cams=p.get('cameras', p.get('members', []))) for p in r.get('fused_people', []) if p.get('xy') is not None]
-        frames.append(dict(t=round(r['time_seconds'], 3), people=people))
+    frames = collect_people(records, {cid: c['visibility_polygon'] for cid, c in transforms['cameras'].items()})
     save_json(out / 'site_result.json', dict(room_id=room['id'], bounds=[min(xs), min(ys), max(xs), max(ys)], cameras=cams, fps=fps, frames=frames))
     print('SITE_RESULT_OK', len(frames), 'mau', flush=True)
 

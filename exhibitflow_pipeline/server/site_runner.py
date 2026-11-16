@@ -125,3 +125,87 @@ def run_repo(repo, data_dir, out_dir, frames, site_room, device='cpu', log=print
     if p.returncode != 0:
         raise RuntimeError('map2d lỗi: ' + ' | '.join(tail[-5:])[-600:])
     return out_dir
+
+
+# ---------------------------------------------------------------------------------------------- nhận diện địa điểm / camera
+# Hiệu chuẩn chỉ đúng với camera đã hiệu chuẩn, nên web KHÔNG áp hiệu chuẩn bừa: so khung hình đầu của mỗi video với đặc trưng
+# tham chiếu (ORB) của từng camera trong hồ sơ địa điểm (`sites/<id>_refs.npz`). Khớp mới ghép; không khớp thì chạy như video thường.
+_REF_CACHE = {}
+
+
+def _features(img):
+    import cv2
+    import numpy as np
+    g = cv2.cvtColor(cv2.resize(img, (640, 360), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    kp, des = cv2.ORB_create(nfeatures=1500, fastThreshold=12).detectAndCompute(g, None)
+    pts = np.array([k.pt for k in kp], np.float32) if kp else np.zeros((0, 2), np.float32)
+    return pts, des
+
+
+def make_reference(site_id, frames):
+    """Tạo/ghi đặc trưng tham chiếu cho địa điểm. frames: {camera_id: ảnh BGR (khung hình điển hình, chưa khử méo)}."""
+    import numpy as np
+    arrays = {}
+    for cam, img in frames.items():
+        pts, des = _features(img)
+        arrays[f'{cam}__pts'], arrays[f'{cam}__des'] = pts, des
+    np.savez_compressed(SITES_DIR / f'{Path(site_id).name}_refs.npz', **arrays)
+
+
+def _load_refs(site_id):
+    import numpy as np
+    if site_id not in _REF_CACHE:
+        p = SITES_DIR / f'{site_id}_refs.npz'
+        refs = {}
+        if p.is_file():
+            z = np.load(p)
+            for k in z.files:
+                if k.endswith('__pts'):
+                    cam = k[:-5]
+                    refs[cam] = (z[k], z[f'{cam}__des'])
+        _REF_CACHE[site_id] = refs
+    return _REF_CACHE[site_id]
+
+
+def _inliers(pa, da, pb, db):
+    import cv2
+    import numpy as np
+    if da is None or db is None or len(pa) < 8 or len(pb) < 8:
+        return 0
+    good = [m for m, n in (p for p in cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(da, db, k=2) if len(p) == 2) if m.distance < 0.75 * n.distance]
+    if len(good) < 8:
+        return 0
+    src = np.float32([pa[m.queryIdx] for m in good]).reshape(-1, 1, 2)
+    dst = np.float32([pb[m.trainIdx] for m in good]).reshape(-1, 1, 2)
+    _, mask = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
+    return int(mask.sum()) if mask is not None else 0
+
+
+def match_images(groups, min_inliers=9, margin=4):
+    """groups: với mỗi video, một danh sách ảnh BGR (vài khung hình ở các thời điểm khác nhau; một ảnh đơn cũng được).
+    Điểm khớp của (video, camera) = số điểm khớp lớn nhất qua các khung. Chỉ nhận khi điểm >= min_inliers và hơn camera thứ hai
+    ít nhất `margin`. Trả None hoặc dict(site_id, name, assign={chỉ số video: id camera}, scores={chỉ số video: {camera: điểm}})."""
+    feats = [[_features(im) for im in (g if isinstance(g, (list, tuple)) else [g])] for g in groups]
+    best = None
+    for sid, info in list_sites().items():
+        refs = _load_refs(sid)
+        if not refs:
+            continue
+        scores = {i: {cam: max((_inliers(pa, da, *refs[cam]) for pa, da in fl), default=0) for cam in refs} for i, fl in enumerate(feats)}
+        pairs = []
+        for i, row in scores.items():
+            ranked = sorted(row.values(), reverse=True)
+            second = ranked[1] if len(ranked) > 1 else 0
+            for cam, sc in row.items():
+                if sc >= min_inliers and sc - second >= margin:
+                    pairs.append((sc, i, cam))
+        assign, used = {}, set()
+        for sc, i, cam in sorted(pairs, reverse=True):     # gán tham lam theo điểm khớp, mỗi video một camera và ngược lại
+            if i in assign or cam in used:
+                continue
+            assign[i] = cam
+            used.add(cam)
+        total = sum(scores[i][c] for i, c in assign.items())
+        if assign and (best is None or total > best[0]):
+            best = (total, dict(site_id=sid, name=info['name'], assign=assign, scores=scores))
+    return best[1] if best else None
