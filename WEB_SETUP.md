@@ -69,11 +69,21 @@ Lệnh cuối in **URL BACKEND**. Chạy web trên máy của bạn rồi dán U
 3. Dòng thông báo cho biết bước đang chạy (`[1/5] ... [4/5] Phân tích video`). Xong hiện "Hoàn tất", cảnh báo, KPI.
 4. Danh sách cảnh báo: lọc Tất cả / Bất thường / Cần xác nhận / Đã loại, **Xem lại / Xác nhận / Bỏ qua**, **Xuất CSV**.
 
+## Map 2D (multicam-2d-floorplan-tracker)
+
+Khối **Map 2D** trên web hiện **ảnh map + vị trí người + hiện vật** do repo `multicam-2d-floorplan-tracker` tạo (qua `dashboard/mapgen.py` của Hưng).
+
+- **Cách hoạt động:** khi bấm Phân tích, backend lấy một khung hình của video, ước lượng sàn bằng Depth-Anything V2 + SegFormer, dựng ảnh map, rồi chiếu chân từng người vào map. Web vẽ chấm người (xanh = bình thường, vàng = đang chạm, đỏ = cảnh báo), hiện vật (vuông xanh), **Vệt đi** (6 giây gần nhất) và **Vùng gần** (vòng quanh hiện vật). Sau khi chạy xong, kéo/tua video thì chấm người chạy theo thời gian video.
+- **Cần có:** repo `multicam-2d-floorplan-tracker` (notebook Kaggle tự clone và đặt `FLOORPLAN_DIR`; trên Vast, `make setup` của Hưng cài vào `external/`). Lần đầu tool tự tải model (Depth-Anything V2, SegFormer, vài trăm MB), nên **video đầu tiên chậm hơn khoảng 15 đến 25 giây** (hoặc hơn nếu phải tải model).
+- **Tắt tạo map** (nhanh hơn, khối Map 2D giữ chỗ như cũ): đặt biến môi trường `EXHIBITFLOW_MAKE_MAP=0`.
+- **Giới hạn:** tool vốn làm cho 5 camera nhiều phòng; ở đây chỉ dùng **1 khung hình của 1 camera** nên map là một phòng suy ra từ ảnh. Nếu cảnh không có tường rõ, map chỉ là lưới mét. Tool ghim `torch 2.11`, `transformers 4.57.3`; chạy chung môi trường với pipeline nên có thể xung đột phiên bản. **Chưa thử với map thật**, mới thử bằng `--demo` (map giả).
+- Nếu tạo map lỗi, pipeline vẫn chạy bình thường và khối Map 2D chỉ hiện khung giữ chỗ (xem log của server có dòng `Không tạo được map 2D`).
+
 ## Giới hạn hiện tại
 
 - **Chỉ chế độ Video.** Realtime bằng camera (RTSP) chưa chạy: engine mới đọc file video, server trả lỗi 501.
 - Lúc đang chạy, giao diện chỉ hiện cảnh báo VLM đã kết luận **bất thường**; danh sách đầy đủ hiện khi chạy xong.
-- Map 2D của dashboard chưa được web này dùng; khối Map 2D chỉ giữ chỗ.
+- Map 2D xem mục **Map 2D** bên dưới. Chất lượng map phụ thuộc cảnh (xem lưu ý ở đó).
 - Server chỉ chạy **một job một lúc**. Gửi job khi model đang nạp hoặc đang có job khác → lỗi 409 kèm lý do.
 - Đường dẫn trên server chỉ lấy trong `/kaggle/input`, `/kaggle/working`, `/content` (đổi bằng biến `EXHIBITFLOW_SOURCE_ROOTS`).
 - Backend này **chưa được thử** với GPU thật trên Kaggle / Vast.ai tại thời điểm viết; mới thử với `--demo`.

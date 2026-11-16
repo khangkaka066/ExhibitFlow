@@ -53,6 +53,7 @@ STAGES = ['Khởi động & nạp model', 'Tách hiện vật', 'Nạp VLM', 'Ph
 SOURCE_ROOTS = [Path(p).resolve() for p in (os.environ.get('EXHIBITFLOW_SOURCE_ROOTS')
                                             or os.pathsep.join(['/kaggle/input', '/kaggle/working', '/content', str(PROJ)])).split(os.pathsep) if p]
 NW = 960                                   # web vẽ hộp hiện vật theo khung rộng 960 px
+MAKE_MAP = os.environ.get('EXHIBITFLOW_MAKE_MAP', '1') != '0'   # tạo map 2D từ video (multicam-2d-floorplan-tracker), mất ~15-25 s/video
 
 
 def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
@@ -224,6 +225,32 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             pass
         return out
 
+    def demo_map():
+        """--demo: tạo ảnh map lưới giả để thử khối Map 2D (pipeline thật tạo map bằng multicam-2d-floorplan-tracker)."""
+        import cv2
+        import numpy as np
+        real = os.environ.get('EXHIBITFLOW_DEMO_MAP')           # tuỳ chọn: nạp ảnh map có sẵn (vd map do mapgen tạo) để thử giao diện
+        if real and Path(real).is_file():
+            out = state.root / 'maps' / 'demo'
+            out.mkdir(parents=True, exist_ok=True)
+            shutil.copy(real, out / 'map.png')
+            with state.lock:
+                state.map_path = out / 'map.png'
+                state.map_version += 1
+            return
+        img = np.full((600, 800, 3), (34, 30, 26), np.uint8)
+        for x in range(0, 800, 50):
+            cv2.line(img, (x, 0), (x, 600), (52, 46, 40), 1)
+        for y in range(0, 600, 50):
+            cv2.line(img, (0, y), (800, y), (52, 46, 40), 1)
+        cv2.rectangle(img, (20, 20), (780, 580), (170, 165, 160), 3)
+        out = state.root / 'maps' / 'demo'
+        out.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out / 'map.png'), img)
+        with state.lock:
+            state.map_path = out / 'map.png'
+            state.map_version += 1
+
     # ------------------------------------------------------------------ job
     @app.post('/api/jobs')
     async def create_job(video: UploadFile | None = File(None), options: str = Form('{}'), source: str = Form('')):
@@ -253,7 +280,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         else:
             raise HTTPException(400, 'Cần gửi video hoặc đường dẫn / URL')
         # realtime: đọc đúng nhịp fps như camera, bỏ frame nếu không kịp; theo lô (Video): xử lý mọi frame
-        state.save_settings(dict(realtime=bool(opts.get('realtime'))))
+        state.save_settings(dict(realtime=bool(opts.get('realtime')), make_map=MAKE_MAP, map_image='auto'))
         try:
             runner.start(str(vpath))
         except RuntimeError as e:
@@ -262,6 +289,8 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         jobs[jid] = dict(id=jid, path=Path(vpath), name=name, t0=time.time(), cancelled=False, final=None, rdir=None,
                          realtime=bool(opts.get('realtime')), vinfo=video_info(vpath))
         cur['id'] = jid
+        if demo:
+            demo_map()
         return {'job_id': jid}
 
     @app.get('/api/jobs/{jid}')
@@ -368,6 +397,30 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         if not j['path'].is_file():
             raise HTTPException(404, 'Không còn video')
         return FileResponse(j['path'])
+
+    # ------------------------------------------------------------------ Map 2D (multicam-2d-floorplan-tracker)
+    @app.get('/api/jobs/{jid}/map')
+    def map_image(jid: str):
+        get_job(jid)
+        with state.lock:
+            p = state.map_path
+        if p is None or not Path(p).is_file():
+            raise HTTPException(404, 'Chưa có map')
+        return FileResponse(p, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/jobs/{jid}/map/data')
+    def map_data(jid: str, full: int = 0):
+        """Vị trí người / hiện vật trên map (toạ độ 0-1 của ảnh map). full=1 (khi xong): kèm vị trí theo từng khung để phát lại."""
+        j = get_job(jid)
+        vfps = j['vinfo']['fps'] or 25.0
+        with state.lock:
+            has = state.map_path is not None and Path(state.map_path).is_file()
+            out = dict(has_map=has, version=state.map_version, fps=vfps,
+                       people=[dict(id=p['id'], x=round(p['x'], 4), y=round(p['y'], 4), state=p.get('state', 'idle')) for p in state.people],
+                       artifacts=[dict(id=a['id'], x=round(a['x'], 4), y=round(a['y'], 4)) for a in state.artifacts])
+            if full and finished(j):
+                out['frames'] = {int(k): [[q[0], q[1], q[2]] for q in v[1]] for k, v in state.timeline.items() if v[1]}
+        return out
 
     @app.get('/api/jobs/{jid}/files/{path:path}')
     def get_file(jid: str, path: str):
