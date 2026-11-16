@@ -365,7 +365,7 @@ async function runLive(src){
   const videoURL=await API.blob(id,'video');
   await pollMap(id,()=>true,true);
   loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:true});
-  setStatus('Hoàn tất');logLine('Hoàn tất.')}
+  setStatus('Hoàn tất');logLine('Hoàn tất.');return true}
 /* ---------- Realtime ---------- */
 function prepareLiveView(name){
   S.videoURL=null;vid.removeAttribute('src');vid.hidden=true;$('#vmsg').hidden=true;
@@ -447,19 +447,43 @@ async function startAnalysis(){
   if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    if(API.ok)await(S.mode==='rt'?runRealtime(src,cam):runLive(src));
+    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
+    else if(API.ok)await(S.mode==='rt'?runRealtime(src,cam):runLive(src));
     else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime(cam):runDemo());
     else{setStatus('Mất kết nối');logLine('Chưa kết nối backend. Vào Settings để nhập URL.')}
   }catch(err){logLine('LỖI: '+err.message);setStatus('Lỗi')}
   finally{setBusy(false);pollSystem()}}
+
+/* ---------- Nhiều camera: mỗi video chạy riêng, mỗi camera một tab (video, cảnh báo, map riêng) ---------- */
+S.files=[];let CAMRES=[],CAMIDX=-1;
+function camSnap(name){return{name,data:DATA,videoURL:S.videoURL,map:MAP}}
+function renderCamTabs(){const el=$('#camTabs');el.hidden=CAMRES.length<2;
+  el.innerHTML=CAMRES.map((c,i)=>{const n=c.data.events.filter(e=>e.decision==='ANOMALY').length;
+    return`<button class="tg${i===CAMIDX?' on':''}" data-cam="${i}" title="${esc(c.name)}">CAM ${i+1}${n?` · ${n}`:''}</button>`}).join('')}
+function showCam(i){const c=CAMRES[i];if(!c)return;CAMIDX=i;MAP=c.map;
+  loadData(c.data,c.videoURL,{liveVideo:true,name:c.name});S.srcName=c.name;renderKpis();renderCamTabs()}
+$('#camTabs').onclick=e=>{const b=e.target.closest('[data-cam]');if(b&&!S.running)showCam(+b.dataset.cam)};
+async function runMulti(files){
+  CAMRES=[];CAMIDX=-1;renderCamTabs();
+  for(let i=0;i<files.length;i++){
+    if(S.cancel)break;
+    S.file=files[i];S.srcName=files[i].name;S.progress=0;renderKpis();
+    logLine(`[Camera ${i+1}/${files.length}] ${files[i].name}`);setStatus(`Camera ${i+1}/${files.length}`);
+    const ok=await runLive('');
+    if(!ok||S.cancel)break;
+    CAMRES.push(camSnap(files[i].name));CAMIDX=CAMRES.length-1;renderCamTabs()}
+  if(CAMRES.length){showCam(0);setStatus(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera`:'Hoàn tất');logLine(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera: bấm CAM 1, CAM 2... để xem từng camera.`:'Hoàn tất.')}}
 
 /* ---------- Upload ---------- */
 function setFile(f){if(!f)return;S.file=f;$('#src').value=f.name;
   S.videoURL=URL.createObjectURL(f);vid.src=S.videoURL;vid.hidden=false;$('#vmsg').hidden=true;
   resetData();S.srcName=f.name;setStatus('Đã chọn video');renderKpis();logLine('Đã chọn video: '+f.name)}
 $('#uploadBtn').onclick=()=>$('#file').click();
-$('#file').onchange=e=>setFile(e.target.files[0]);
-$('#src').oninput=()=>{S.file=null};
+$('#file').onchange=e=>{const fs=[...e.target.files];S.files=fs;CAMRES=[];CAMIDX=-1;renderCamTabs();
+  if(fs.length>1){S.file=fs[0];$('#src').value=`${fs.length} video: ${fs.map(f=>f.name).join(', ')}`;S.videoURL=URL.createObjectURL(fs[0]);vid.src=S.videoURL;vid.hidden=false;$('#vmsg').hidden=true;
+    resetData();S.srcName=`${fs.length} camera`;setStatus(`Đã chọn ${fs.length} video`);renderKpis();logLine(`Đã chọn ${fs.length} video: mỗi video chạy như một camera, kết quả hiện ở các tab CAM 1, CAM 2...`)}
+  else setFile(fs[0])};
+$('#src').oninput=()=>{S.file=null;S.files=[]};
 $('#runBtn').onclick=startAnalysis;
 $('#stopBtn').onclick=()=>{S.cancel=true;logLine('Đang dừng…')};
 

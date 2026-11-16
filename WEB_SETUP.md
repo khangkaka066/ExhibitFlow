@@ -79,6 +79,15 @@ Khối **Map 2D** trên web hiện **ảnh map + vị trí người + hiện v�
 - **Giới hạn:** tool vốn làm cho 5 camera nhiều phòng; ở đây chỉ dùng **1 khung hình của 1 camera** nên map là một phòng suy ra từ ảnh. Nếu cảnh không có tường rõ, map chỉ là lưới mét. Tool ghim `torch 2.11`, `transformers 4.57.3`; chạy chung môi trường với pipeline nên có thể xung đột phiên bản. **Chưa thử với map thật**, mới thử bằng `--demo` (map giả).
 - Nếu tạo map lỗi, pipeline vẫn chạy bình thường và khối Map 2D chỉ hiện khung giữ chỗ (xem log của server có dòng `Không tạo được map 2D`).
 
+### Nhiều camera (nhiều góc)
+
+Bấm **Upload** và **chọn nhiều video cùng lúc** (giữ `Ctrl` hoặc `Shift`). Mỗi video chạy **riêng, lần lượt** như một camera; xong hiện các tab **CAM 1, CAM 2...** phía trên video (kèm số cảnh báo). Mỗi tab có video, danh sách cảnh báo, KPI và **map riêng**. Chỉ dùng ở chế độ **Video** (Realtime camera chưa chạy).
+
+Lưu ý quan trọng về repo `multicam-2d-floorplan-tracker`:
+- Pipeline đầy đủ của repo (`main.py --mode project`, hợp nhất nhiều camera, ID xuyên camera, `build-global`) **bắt buộc có hiệu chuẩn từng camera** (ma trận `H_image_to_map` hoặc `K/R/t`). Với video upload không có hiệu chuẩn, repo báo `uncalibrated videos need an external reconstruction adapter`.
+- Vì vậy web dùng cách của `dashboard/mapgen.py`: ước lượng **từng camera riêng** (Depth-Anything + SegFormer + `ArchitecturalMapBuilder`). Các map của các camera **chưa được ghép chung một mặt bằng**.
+- Muốn ghép chung và hợp nhất người giữa các camera, cần cung cấp hiệu chuẩn (như `transforms.json` / `manifest.json` trong bộ dữ liệu `Museum/`). Phần này chưa có trên web.
+
 ## Giới hạn hiện tại
 
 - **Chỉ chế độ Video.** Realtime bằng camera (RTSP) chưa chạy: engine mới đọc file video, server trả lỗi 501.

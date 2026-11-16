@@ -457,3 +457,9 @@ html,body{color:var(--text)}
 @media(prefers-reduced-motion:reduce){.wm-main{animation:none}}
 .top .chip,.top .btn{white-space:nowrap}
 @media(max-width:1000px){.wm-sub{display:none}.wm-main{font-size:32px}}
+
+/* Tab camera (khi upload nhiều video) */
+.camtabs{display:flex;gap:6px;flex-wrap:wrap;margin-right:6px}
+.camtabs .tg{border:1px solid #323B45;border-radius:4px;padding:3px 11px;background:transparent;color:var(--muted)}
+.camtabs .tg:hover{border-color:var(--accent)}
+.camtabs .tg.on{background:var(--accent);border-color:var(--accent);color:#1A0C02}
