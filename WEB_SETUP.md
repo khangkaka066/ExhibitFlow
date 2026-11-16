@@ -79,14 +79,27 @@ Khối **Map 2D** trên web hiện **ảnh map + vị trí người + hiện v�
 - **Giới hạn:** tool vốn làm cho 5 camera nhiều phòng; ở đây chỉ dùng **1 khung hình của 1 camera** nên map là một phòng suy ra từ ảnh. Nếu cảnh không có tường rõ, map chỉ là lưới mét. Tool ghim `torch 2.11`, `transformers 4.57.3`; chạy chung môi trường với pipeline nên có thể xung đột phiên bản. **Chưa thử với map thật**, mới thử bằng `--demo` (map giả).
 - Nếu tạo map lỗi, pipeline vẫn chạy bình thường và khối Map 2D chỉ hiện khung giữ chỗ (xem log của server có dòng `Không tạo được map 2D`).
 
-### Nhiều camera (nhiều góc)
+### Nhiều camera
 
-Bấm **Upload** và **chọn nhiều video cùng lúc** (giữ `Ctrl` hoặc `Shift`). Mỗi video chạy **riêng, lần lượt** như một camera; xong hiện các tab **CAM 1, CAM 2...** phía trên video (kèm số cảnh báo). Mỗi tab có video, danh sách cảnh báo, KPI và **map riêng**. Chỉ dùng ở chế độ **Video** (Realtime camera chưa chạy).
+Chọn **nhiều video cùng lúc** khi bấm **Upload** (giữ `Ctrl` hoặc `Shift`). Có hai cách chạy, tuỳ ô **Địa điểm** bên cạnh ô nguồn:
 
-Lưu ý quan trọng về repo `multicam-2d-floorplan-tracker`:
-- Pipeline đầy đủ của repo (`main.py --mode project`, hợp nhất nhiều camera, ID xuyên camera, `build-global`) **bắt buộc có hiệu chuẩn từng camera** (ma trận `H_image_to_map` hoặc `K/R/t`). Với video upload không có hiệu chuẩn, repo báo `uncalibrated videos need an external reconstruction adapter`.
-- Vì vậy web dùng cách của `dashboard/mapgen.py`: ước lượng **từng camera riêng** (Depth-Anything + SegFormer + `ArchitecturalMapBuilder`). Các map của các camera **chưa được ghép chung một mặt bằng**.
-- Muốn ghép chung và hợp nhất người giữa các camera, cần cung cấp hiệu chuẩn (như `transforms.json` / `manifest.json` trong bộ dữ liệu `Museum/`). Phần này chưa có trên web.
+**1. Địa điểm: "không" (mặc định)**: mỗi video chạy **riêng, lần lượt** như một camera với pipeline của Hưng (cảnh báo hành vi + map ước lượng từ chính video đó). Xong hiện các tab **CAM 1, CAM 2...** (kèm số cảnh báo). Mỗi camera có map riêng, **chưa ghép chung**.
+
+**2. Chọn một địa điểm đã hiệu chuẩn (ví dụ WILDTRACK)**: các video được **ghép thành MỘT map chung** bằng repo `multicam-2d-floorplan-tracker`:
+- Web tự gán video vào camera theo số trong tên file (`cam1...`, `C2...`), file nào không có số thì gán theo thứ tự.
+- Server cắt khung đã khử méo (4 khung/giây), rồi chạy các bước lõi của repo: phát hiện người đa kích thước (YOLO pose, ngoại suy điểm chân theo tỉ lệ cơ thể), tinh chỉnh ma trận chiếu giữa các camera, **hợp nhất người giữa các camera và gán ID chung**.
+- Kết quả: khối **Map 2D** vẽ mặt phẳng chung với **vùng nhìn của từng camera**, **người với ID chung**, **vệt đi** (6 giây gần nhất, bật/tắt bằng nút Vệt đi). Bấm tab **CAM 1, CAM 2...** để xem video từng camera (camera đang chọn sáng hơn trên map); tua video thì người trên map chạy theo.
+- Chế độ này **chỉ ghép map và người**, **không chạy nhận diện hành vi / VLM** (muốn cảnh báo thì chạy cách 1).
+
+Yêu cầu video cho cách 2: đúng độ phân giải của hiệu chuẩn (WILDTRACK: 1920×1080), **các video cùng một khoảng thời gian** (cùng giây bắt đầu), **H.264** (trình duyệt không phát được MPEG-4 Part 2 `mp4v`, video sẽ đen dù map vẫn đúng). Server chỉ dùng **tối đa 30 giây đầu** mỗi video (đổi bằng `EXHIBITFLOW_SITE_MAX_SECONDS`). Thiết bị chạy người: GPU nếu có, không thì CPU (`EXHIBITFLOW_SITE_DEVICE` để ép). Tham khảo: 3 video × 8 giây mất khoảng 90 giây trên CPU máy cá nhân.
+
+Cần có trên server (notebook Kaggle đã làm sẵn ở ô 3): repo `multicam-2d-floorplan-tracker` (`FLOORPLAN_DIR`), `pip install ultralytics shapely`, và model của repo (`python scripts/download_person_models.py`: `yolo11n-pose.pt`, `resnet18`).
+
+**Vì sao không dùng bộ dựng tường của repo:** `ArchitecturalMapBuilder` dựng mặt bằng từ tường (độ sâu) nên không chạy được ở nơi **không có tường** như sân WILDTRACK (báo `Insufficient points for a structural plane`). Với địa điểm đã hiệu chuẩn, web dùng thẳng hiệu chuẩn rồi gọi `collect` + `process` của repo (`server/site_driver.py`), và vẽ map (vùng nhìn camera, người) ngay trên giao diện.
+
+**Thêm địa điểm mới:** tạo `exhibitflow_pipeline/server/sites/<id>.json` (xem `wildtrack.json`): `site_id`, `name`, `room_id`, `sample_fps`, `cameras` với mỗi camera gồm `K` (3×3), `dist` (5 hệ số méo; để 0 nếu video đã khử méo), `R_world_to_camera` (3×3), `t_world_to_camera` (mét), `width`, `height`, `label`. Hệ toạ độ thế giới: mét, mặt đất Z = 0. Khởi động lại server để thấy địa điểm mới.
+
+**Dữ liệu WILDTRACK dùng để thử:** hiệu chuẩn camera 1 đến 3 (`CVLab1..3`, ngoại tại đổi từ cm sang mét, nội tại bản gốc có khử méo) lấy từ bộ [WILDTRACK](https://epfl.ch/labs/cvlab/data/data-wildtrack) của EPFL CVLab (trang không nêu rõ giấy phép; chỉ dùng để thử nghiệm, trích dẫn: Chavdarova et al., CVPR 2018). Video thử là camera 1 đến 3, đoạn giây 60 đến 68, đã nén H.264.
 
 ## Giới hạn hiện tại
 
@@ -114,6 +127,7 @@ Lưu ý quan trọng về repo `multicam-2d-floorplan-tracker`:
 | Ô 2 Kaggle báo "Không thấy server/web_server.py" | Nhánh trong `BRANCH` chưa có file này (chưa push). Kiểm tra tên nhánh. |
 | Chip "Mất kết nối" | URL sai hoặc đã đổi (URL cloudflared đổi mỗi lần chạy lại ô cuối); ô 5 đã dừng. |
 | Lỗi 409 khi Phân tích | Model đang nạp hoặc đang có job khác: đợi hoặc bấm Dừng. |
+| Chọn địa điểm mà báo lỗi `Chưa cài repo multicam-2d-floorplan-tracker` | Server không thấy repo map2d: đặt `FLOORPLAN_DIR` (notebook Kaggle tự đặt ở ô 2) |
 | Lỗi 501 | Nguồn camera (RTSP/RTMP) chưa hỗ trợ; dùng file video. |
 | Log có `CUDNN_STATUS_NOT_SUPPORTED`, `Falling back to CPUExecutionProvider` | Model bàn tay (RTMW) rơi về CPU vì cuDNN không khớp trên máy này (hay gặp ở Kaggle T4). Vẫn chạy, chỉ **chậm hơn**. |
 | Video xem lại sau khi chạy xong không có khung người | Server không có `live.mp4` để phát (đang `--demo`, hoặc `EXHIBITFLOW_SAVE_VIDEO=0`, hoặc ghi video lỗi) nên web phát video gốc. |

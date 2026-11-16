@@ -177,7 +177,7 @@ const API={base:(()=>{try{return localStorage.getItem('ef_api')||''}catch{return
     const c=$('#beChip');c.classList.toggle('ok',this.ok);c.classList.toggle('bad',!this.ok);
     c.querySelector('span').textContent=this.ok?'Đã kết nối':'Mất kết nối';
     $('#beMsg').textContent=this.ok?'đã kết nối ✓':(this.base?'không kết nối được':'chưa kết nối');
-    pollSystem()},
+    pollSystem();if(typeof loadSites==='function')loadSites()},
   async system(){return (await this.f('/api/system')).json()},
   async start(fd){return (await (await this.f('/api/jobs',{method:'POST',body:fd})).json()).job_id},
   async job(id){return (await this.f(`/api/jobs/${id}`)).json()},
@@ -266,7 +266,7 @@ function resetData(){resetMap();hideLive();S.liveSim=false;DATA=EMPTY;D=60;deriv
 /* ---------- Map 2D thật (multicam-2d-floorplan-tracker qua backend): ảnh map + vị trí người / hiện vật ---------- */
 const MAP0=()=>({ver:-1,img:null,people:[],arts:[],frames:null,keys:null,fps:25,shown:0,trail:{}});
 let MAP=MAP0();
-function resetMap(){MAP=MAP0()}
+function resetMap(){MAP=MAP0();if(typeof SITEDATA!=='undefined')SITEDATA=null}
 async function pollMap(id,alive,full){
   try{const d=await(await API.f(`/api/jobs/${id}/map/data${full?'?full=1':''}`)).json();
     if(!alive()&&!full)return;
@@ -305,6 +305,7 @@ function drawRealMap(c,t){
     x.fillStyle=col;x.beginPath();x.arc(X(p.x),Y(p.y),6,0,7);x.fill();x.strokeStyle='#0B0F13';x.lineWidth=1.5;x.stroke();
     x.fillStyle='#fff';x.font='600 11px Segoe UI';x.fillText('#'+p.id,X(p.x)+9,Y(p.y)+4)}}
 function drawMapPanel(t){const c=$('#map');   // true nếu đã vẽ map thật; false thì vẽ khung giữ chỗ như cũ
+  if(typeof SITEDATA!=='undefined'&&SITEDATA){drawSiteMap(c,t);return true}
   if(MAP.img&&MAP.img.complete&&MAP.img.naturalWidth){drawRealMap(c,t);return true}
   drawMap(c,DATA.real?{live:false,t:0,...S.mlayers}:{live:S.loaded,t,...S.mlayers});return false}
 
@@ -364,7 +365,7 @@ async function runLive(src){
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');
   await pollMap(id,()=>true,true);
-  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:true});
+  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:true,name:S.file?S.file.name:(src.split(/[\/]/).pop()||undefined)});
   setStatus('Hoàn tất');logLine('Hoàn tất.');return true}
 /* ---------- Realtime ---------- */
 function prepareLiveView(name){
@@ -423,7 +424,7 @@ async function runRealtime(src,cam){
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');S.progress=100;
   await pollMap(id,()=>true,true);
-  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false});
+  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false,name:S.file?S.file.name:(src.split(/[\/]/).pop()||undefined)});
   setStatus('Hoàn tất');logLine('Hoàn tất realtime: đã thay danh sách tạm bằng kết quả cuối.')}
 async function runDemoRealtime(cam){
   if(cam){S.videoURL=null;vid.removeAttribute('src')}
@@ -447,7 +448,8 @@ async function startAnalysis(){
   if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
+    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>=1&&$('#siteSel').value)await runSite(S.files,$('#siteSel').value);
+    else if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
     else if(API.ok)await(S.mode==='rt'?runRealtime(src,cam):runLive(src));
     else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime(cam):runDemo());
     else{setStatus('Mất kết nối');logLine('Chưa kết nối backend. Vào Settings để nhập URL.')}
@@ -459,7 +461,7 @@ S.files=[];let CAMRES=[],CAMIDX=-1;
 function camSnap(name){return{name,data:DATA,videoURL:S.videoURL,map:MAP}}
 function renderCamTabs(){const el=$('#camTabs');el.hidden=CAMRES.length<2;
   el.innerHTML=CAMRES.map((c,i)=>{const n=c.data.events.filter(e=>e.decision==='ANOMALY').length;
-    return`<button class="tg${i===CAMIDX?' on':''}" data-cam="${i}" title="${esc(c.name)}">CAM ${i+1}${n?` · ${n}`:''}</button>`}).join('')}
+    return`<button class="tg${i===CAMIDX?' on':''}" data-cam="${i}" title="${esc(c.name)}">${esc(c.label||('CAM '+(i+1)))}${n?` · ${n}`:''}</button>`}).join('')}
 function showCam(i){const c=CAMRES[i];if(!c)return;CAMIDX=i;MAP=c.map;
   loadData(c.data,c.videoURL,{liveVideo:true,name:c.name});S.srcName=c.name;renderKpis();renderCamTabs()}
 $('#camTabs').onclick=e=>{const b=e.target.closest('[data-cam]');if(b&&!S.running)showCam(+b.dataset.cam)};
@@ -473,6 +475,69 @@ async function runMulti(files){
     if(!ok||S.cancel)break;
     CAMRES.push(camSnap(files[i].name));CAMIDX=CAMRES.length-1;renderCamTabs()}
   if(CAMRES.length){showCam(0);setStatus(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera`:'Hoàn tất');logLine(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera: bấm CAM 1, CAM 2... để xem từng camera.`:'Hoàn tất.')}}
+
+/* ---------- Địa điểm đã hiệu chuẩn: ghép nhiều camera thành MỘT map (multicam-2d-floorplan-tracker) ---------- */
+const SITE_COLORS=['#5B9BEA','#3DDC97','#FFA040','#B388FF','#FF6B8A','#4DD0E1','#FFD54F'];
+let SITES=[],SITEDATA=null;
+async function loadSites(){const s=$('#siteSel');if(!s)return;
+  try{SITES=API.ok?await(await API.f('/api/sites')).json():[]}catch{SITES=[]}
+  s.innerHTML='<option value="">Địa điểm: không (mỗi camera một map)</option>'+SITES.map(x=>`<option value="${esc(x.site_id)}">${esc(x.name)}</option>`).join('');
+  s.hidden=!SITES.length;try{const v=localStorage.getItem('ef_site');if(v&&SITES.some(x=>x.site_id===v))s.value=v}catch{}}
+$('#siteSel').onchange=()=>{try{localStorage.setItem('ef_site',$('#siteSel').value)}catch{}};
+async function blobUrl(path){try{return URL.createObjectURL(await(await API.f(path)).blob())}catch{return null}}
+function assignCams(files,site){          // gán video vào camera: theo số trong tên file (cam1, C2...), còn lại theo thứ tự
+  const free=[...site.cameras],out=[],rest=[];
+  for(const f of files){const m=f.name.match(/(?:^|[^a-z0-9])c(?:am)?[ _-]?(\d+)/i),id=m&&'C'+m[1],i=id?free.indexOf(id):-1;
+    if(i>=0){out.push({cam:id,file:f});free.splice(i,1)}else rest.push(f)}
+  for(const f of rest){if(!free.length)break;out.push({cam:free.shift(),file:f})}
+  return out.sort((a,b)=>site.cameras.indexOf(a.cam)-site.cameras.indexOf(b.cam))}
+async function runSite(files,siteId){
+  const site=SITES.find(s=>s.site_id===siteId),map=assignCams(files,site);
+  if(!map.length)throw new Error('Không gán được video vào camera của địa điểm này');
+  if(files.length>map.length)logLine(`Địa điểm ${site.name} chỉ có ${site.cameras.length} camera: bỏ qua ${files.length-map.length} video thừa.`);
+  CAMRES=[];CAMIDX=-1;renderCamTabs();resetMap();
+  const fd=new FormData();fd.append('site',siteId);map.forEach(m=>fd.append(m.cam,m.file));
+  logLine(map.map(m=>`${site.labels[m.cam]||m.cam} ← ${m.file.name}`).join(' · '));setStatus('Ghép camera');
+  const id=(await(await API.f('/api/site-jobs',{method:'POST',body:fd})).json()).job_id;S.jobId=id;
+  for(;;){
+    if(S.cancel){logLine('Đã dừng. Server vẫn xử lý xong lượt ghép hiện tại.');return stopped()}
+    const j=await(await API.f('/api/site-jobs/'+id)).json();
+    S.progress=j.status==='done'?100:(j.stage+.5)/j.stages.length*100;renderKpis();
+    logLine(`[${j.stage+1}/${j.stages.length}] ${j.stages[j.stage]}`);
+    if(j.status==='error')throw new Error(j.error);
+    if(j.status==='done')break;
+    await sleep(1500)}
+  const res=await(await API.f(`/api/site-jobs/${id}/result`)).json();
+  SITEDATA={bounds:res.bounds,cams:res.cameras,frames:res.frames,fps:res.fps};
+  const dur=res.frames.length/(res.fps||1);
+  for(const m of map){
+    const data={real:true,raw:null,meta:{duration:dur,camera_id:m.file.name,width:1920,height:1080,nw:960},arts:[],tracks:[],events:[]};
+    CAMRES.push({name:m.file.name,label:site.labels[m.cam]||m.cam,cam:m.cam,data,videoURL:await blobUrl(`/api/site-jobs/${id}/video/${m.cam}`),map:MAP})}
+  showCam(0);setStatus(`Hoàn tất ${CAMRES.length} camera`);
+  const ids=new Set(res.frames.flatMap(f=>f.people.map(p=>p.id)));
+  logLine(`Hoàn tất: ${CAMRES.length} camera ghép thành một map chung, ${ids.size} người (ID chung).`);return true}
+function siteFrameAt(t){const F=SITEDATA.frames;let lo=0,hi=F.length-1;if(!F.length||t<F[0].t)return -1;
+  while(lo<hi){const m=(lo+hi+1)>>1;F[m].t<=t?lo=m:hi=m-1}return lo}
+function drawSiteMap(c,t){
+  const {x,w,h}=fit(c);x.clearRect(0,0,w,h);const D_=SITEDATA,[x0,y0,x1,y1]=D_.bounds,pad=12;
+  const sc=Math.min((w-pad*2)/(x1-x0),(h-pad*2)/(y1-y0)),ox=(w-(x1-x0)*sc)/2,oy=(h-(y1-y0)*sc)/2,X=v=>ox+(v-x0)*sc,Y=v=>oy+(y1-v)*sc;
+  x.fillStyle='#0D1217';x.beginPath();x.roundRect(ox,oy,(x1-x0)*sc,(y1-y0)*sc,6);x.fill();
+  x.strokeStyle='rgba(255,255,255,.07)';x.lineWidth=1;
+  for(let g=Math.ceil(x0/5)*5;g<x1;g+=5){x.beginPath();x.moveTo(X(g),oy);x.lineTo(X(g),oy+(y1-y0)*sc);x.stroke()}
+  for(let g=Math.ceil(y0/5)*5;g<y1;g+=5){x.beginPath();x.moveTo(ox,Y(g));x.lineTo(ox+(x1-x0)*sc,Y(g));x.stroke()}
+  const active=CAMRES[CAMIDX]&&CAMRES[CAMIDX].cam;
+  D_.cams.forEach((cm,i)=>{const col=SITE_COLORS[i%SITE_COLORS.length],on=cm.id===active;
+    x.beginPath();cm.fov.forEach((p,k)=>k?x.lineTo(X(p[0]),Y(p[1])):x.moveTo(X(p[0]),Y(p[1])));x.closePath();
+    x.globalAlpha=on?.28:.13;x.fillStyle=col;x.fill();x.globalAlpha=on?.9:.45;x.strokeStyle=col;x.lineWidth=on?2:1;x.stroke();x.globalAlpha=1;
+    x.fillStyle=col;x.beginPath();x.arc(X(cm.center[0]),Y(cm.center[1]),6,0,7);x.fill();
+    x.fillStyle='#fff';x.font='600 11px Segoe UI';x.textAlign='left';x.fillText(cm.id,X(cm.center[0])+9,Y(cm.center[1])+4)});
+  const k=siteFrameAt(t);let n=0;
+  if(k>=0){const cur=D_.frames[k].people;n=cur.length;
+    if(S.mlayers.trails){const t0=t-6;for(const p of cur){x.strokeStyle='rgba(61,220,151,.55)';x.lineWidth=2;x.beginPath();let st=false;
+      for(let j=k;j>=0&&D_.frames[j].t>=t0;j--){const q=D_.frames[j].people.find(r=>r.id===p.id);if(!q)continue;st?x.lineTo(X(q.x),Y(q.y)):(x.moveTo(X(q.x),Y(q.y)),st=true)}x.stroke()}}
+    for(const p of cur){x.fillStyle='#3DDC97';x.beginPath();x.arc(X(p.x),Y(p.y),5.5,0,7);x.fill();x.strokeStyle='#0B0F13';x.lineWidth=1.5;x.stroke();
+      x.fillStyle='#fff';x.font='600 11px Segoe UI';x.fillText('#'+p.id,X(p.x)+8,Y(p.y)+4)}}
+  MAP.shown=n}
 
 /* ---------- Upload ---------- */
 function setFile(f){if(!f)return;S.file=f;$('#src').value=f.name;
