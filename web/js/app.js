@@ -266,7 +266,7 @@ function resetData(){resetMap();hideLive();S.liveSim=false;DATA=EMPTY;D=60;deriv
 /* ---------- Map 2D thật (multicam-2d-floorplan-tracker qua backend): ảnh map + vị trí người / hiện vật ---------- */
 const MAP0=()=>({ver:-1,img:null,people:[],arts:[],frames:null,keys:null,fps:25,shown:0,trail:{}});
 let MAP=MAP0();
-function resetMap(){MAP=MAP0();if(typeof SITEDATA!=='undefined')SITEDATA=null}
+function resetMap(){MAP=MAP0()}
 async function pollMap(id,alive,full){
   try{const d=await(await API.f(`/api/jobs/${id}/map/data${full?'?full=1':''}`)).json();
     if(!alive()&&!full)return;
@@ -305,7 +305,6 @@ function drawRealMap(c,t){
     x.fillStyle=col;x.beginPath();x.arc(X(p.x),Y(p.y),6,0,7);x.fill();x.strokeStyle='#0B0F13';x.lineWidth=1.5;x.stroke();
     x.fillStyle='#fff';x.font='600 11px Segoe UI';x.fillText('#'+p.id,X(p.x)+9,Y(p.y)+4)}}
 function drawMapPanel(t){const c=$('#map');   // true nếu đã vẽ map thật; false thì vẽ khung giữ chỗ như cũ
-  if(typeof SITEDATA!=='undefined'&&SITEDATA){drawSiteMap(c,t);return true}
   if(MAP.img&&MAP.img.complete&&MAP.img.naturalWidth){drawRealMap(c,t);return true}
   drawMap(c,DATA.real?{live:false,t:0,...S.mlayers}:{live:S.loaded,t,...S.mlayers});return false}
 
@@ -365,7 +364,7 @@ async function runLive(src){
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');
   await pollMap(id,()=>true,true);
-  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:true,name:S.file?S.file.name:(src.split(/[\/]/).pop()||undefined)});
+  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:true});
   setStatus('Hoàn tất');logLine('Hoàn tất.');return true}
 /* ---------- Realtime ---------- */
 function prepareLiveView(name){
@@ -424,7 +423,7 @@ async function runRealtime(src,cam){
   await Promise.all(res.events.filter(e=>e.task).map(async e=>{imgs[e.event_id]=await API.blob(id,`files/${key}/vlm_inputs/${e.task}/sheet.jpg`)}));
   const videoURL=await API.blob(id,'video');S.progress=100;
   await pollMap(id,()=>true,true);
-  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false,name:S.file?S.file.name:(src.split(/[\/]/).pop()||undefined)});
+  loadData(fromResult(res,e=>imgs[e.event_id]),videoURL,{liveVideo:false});
   setStatus('Hoàn tất');logLine('Hoàn tất realtime: đã thay danh sách tạm bằng kết quả cuối.')}
 async function runDemoRealtime(cam){
   if(cam){S.videoURL=null;vid.removeAttribute('src')}
@@ -448,10 +447,7 @@ async function startAnalysis(){
   if(!cam&&!S.file&&!src){setStatus('Chưa có video');logLine('Chưa có video: bấm Upload hoặc nhập đường dẫn / URL.');return}
   S.cancel=false;S.progress=0;setBusy(true);renderKpis();
   try{
-    let site=null;
-    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>=1){logLine('Đang nhận diện camera…');setStatus('Nhận diện camera');site=await matchSite(S.files)}
-    if(site)await runSite(S.files,site);
-    else if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
+    if(API.ok&&!cam&&S.mode==='batch'&&S.files.length>1)await runMulti(S.files);
     else if(API.ok)await(S.mode==='rt'?runRealtime(src,cam):runLive(src));
     else if(CFG.demo)await(S.mode==='rt'?runDemoRealtime(cam):runDemo());
     else{setStatus('Mất kết nối');logLine('Chưa kết nối backend. Vào Settings để nhập URL.')}
@@ -463,7 +459,7 @@ S.files=[];let CAMRES=[],CAMIDX=-1;
 function camSnap(name){return{name,data:DATA,videoURL:S.videoURL,map:MAP}}
 function renderCamTabs(){const el=$('#camTabs');el.hidden=CAMRES.length<2;
   el.innerHTML=CAMRES.map((c,i)=>{const n=c.data.events.filter(e=>e.decision==='ANOMALY').length;
-    return`<button class="tg${i===CAMIDX?' on':''}" data-cam="${i}" title="${esc(c.name)}">${esc(c.label||('CAM '+(i+1)))}${n?` · ${n}`:''}</button>`}).join('')}
+    return`<button class="tg${i===CAMIDX?' on':''}" data-cam="${i}" title="${esc(c.name)}">CAM ${i+1}${n?` · ${n}`:''}</button>`}).join('')}
 function showCam(i){const c=CAMRES[i];if(!c)return;CAMIDX=i;MAP=c.map;
   loadData(c.data,c.videoURL,{liveVideo:true,name:c.name});S.srcName=c.name;renderKpis();renderCamTabs()}
 $('#camTabs').onclick=e=>{const b=e.target.closest('[data-cam]');if(b&&!S.running)showCam(+b.dataset.cam)};
@@ -477,70 +473,6 @@ async function runMulti(files){
     if(!ok||S.cancel)break;
     CAMRES.push(camSnap(files[i].name));CAMIDX=CAMRES.length-1;renderCamTabs()}
   if(CAMRES.length){showCam(0);setStatus(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera`:'Hoàn tất');logLine(CAMRES.length>1?`Hoàn tất ${CAMRES.length} camera: bấm CAM 1, CAM 2... để xem từng camera.`:'Hoàn tất.')}}
-
-/* ---------- Tự nhận diện camera đã hiệu chuẩn và ghép nhiều camera thành MỘT map (multicam-2d-floorplan-tracker) ---------- */
-const SITE_COLORS=['#5B9BEA','#3DDC97','#FFA040','#B388FF','#FF6B8A','#4DD0E1','#FFD54F'];
-let SITEDATA=null;
-async function blobUrl(path){try{return URL.createObjectURL(await(await API.f(path)).blob())}catch{return null}}
-async function grabFrames(file){          // 3 khung hình nhỏ (15%, 50%, 85% thời lượng) để server nhận diện camera
-  const url=URL.createObjectURL(file),v=document.createElement('video');v.muted=true;v.preload='auto';v.src=url;
-  try{await new Promise((ok,no)=>{v.onloadedmetadata=ok;v.onerror=()=>no(0);setTimeout(()=>no(0),15000)});
-    const out=[],c=document.createElement('canvas');c.width=640;c.height=360;const x=c.getContext('2d');
-    for(const p of [.15,.5,.85]){v.currentTime=Math.max(0,(v.duration||0)*p);await new Promise((ok,no)=>{v.onseeked=ok;setTimeout(()=>no(0),10000)});
-      x.drawImage(v,0,0,640,360);const b=await new Promise(r=>c.toBlob(r,'image/jpeg',.85));if(b)out.push(b)}
-    return out}catch{return[]}finally{URL.revokeObjectURL(url)}}
-async function matchSite(files){          // trả về {site_id,name,assign:{chỉ số video:id camera}} hoặc null nếu không nhận ra
-  try{const fd=new FormData();let n=0;
-    for(let i=0;i<files.length;i++)(await grabFrames(files[i])).forEach((b,j)=>{fd.append(`v${i}_${j}`,b,`f${i}_${j}.jpg`);n++});
-    if(!n)return null;
-    const r=await(await API.f('/api/site-match',{method:'POST',body:fd})).json();return r&&r.matched?r:null}catch{return null}}
-const camNum=id=>(String(id).match(/\d+/)||[0])[0]*1;
-async function runSite(files,m){
-  const map=Object.keys(m.assign).map(Number).map(i=>({cam:m.assign[i],file:files[i]})).sort((a,b)=>camNum(a.cam)-camNum(b.cam)),skipped=files.length-map.length;
-  const label=id=>'CAM '+(camNum(id)||id);
-  CAMRES=[];CAMIDX=-1;renderCamTabs();resetMap();
-  const fd=new FormData();fd.append('site',m.site_id);map.forEach(x=>fd.append(x.cam,x.file));
-  logLine(`Nhận ra ${m.name}: `+map.map(x=>`${x.file.name} → ${label(x.cam)}`).join(' · ')+(skipped?` (bỏ qua ${skipped} video không khớp)`:''));setStatus('Ghép camera');
-  const id=(await(await API.f('/api/site-jobs',{method:'POST',body:fd})).json()).job_id;S.jobId=id;
-  for(;;){
-    if(S.cancel){logLine('Đã dừng. Server vẫn xử lý xong lượt ghép hiện tại.');return stopped()}
-    const j=await(await API.f('/api/site-jobs/'+id)).json();
-    S.progress=j.status==='done'?100:(j.stage+.5)/j.stages.length*100;renderKpis();
-    logLine(`[${j.stage+1}/${j.stages.length}] ${j.stages[j.stage]}`);
-    if(j.status==='error')throw new Error(j.error);
-    if(j.status==='done')break;
-    await sleep(1500)}
-  const res=await(await API.f(`/api/site-jobs/${id}/result`)).json();
-  SITEDATA={bounds:res.bounds,cams:res.cameras,frames:res.frames,fps:res.fps};
-  const dur=res.frames.length/(res.fps||1);
-  for(const x of map){
-    const data={real:true,raw:null,meta:{duration:dur,camera_id:x.file.name,width:1920,height:1080,nw:960},arts:[],tracks:[],events:[]};
-    CAMRES.push({name:x.file.name,label:label(x.cam),cam:x.cam,data,videoURL:await blobUrl(`/api/site-jobs/${id}/video/${x.cam}`),map:MAP})}
-  showCam(0);setStatus(map.length>1?`Hoàn tất ${map.length} camera`:'Hoàn tất');
-  const ids=new Set(res.frames.flatMap(f=>f.people.map(p=>p.id)));
-  logLine(map.length>1?`Hoàn tất: ${map.length} camera ghép thành một map chung, ${ids.size} người (ID chung).`:`Hoàn tất: map từ 1 camera, ${ids.size} người.`);return true}
-function siteFrameAt(t){const F=SITEDATA.frames;let lo=0,hi=F.length-1;if(!F.length||t<F[0].t)return -1;
-  while(lo<hi){const m=(lo+hi+1)>>1;F[m].t<=t?lo=m:hi=m-1}return lo}
-function drawSiteMap(c,t){
-  const {x,w,h}=fit(c);x.clearRect(0,0,w,h);const D_=SITEDATA,[x0,y0,x1,y1]=D_.bounds,pad=12;
-  const sc=Math.min((w-pad*2)/(x1-x0),(h-pad*2)/(y1-y0)),ox=(w-(x1-x0)*sc)/2,oy=(h-(y1-y0)*sc)/2,X=v=>ox+(v-x0)*sc,Y=v=>oy+(y1-v)*sc;
-  x.fillStyle='#0D1217';x.beginPath();x.roundRect(ox,oy,(x1-x0)*sc,(y1-y0)*sc,6);x.fill();
-  x.strokeStyle='rgba(255,255,255,.07)';x.lineWidth=1;
-  for(let g=Math.ceil(x0/5)*5;g<x1;g+=5){x.beginPath();x.moveTo(X(g),oy);x.lineTo(X(g),oy+(y1-y0)*sc);x.stroke()}
-  for(let g=Math.ceil(y0/5)*5;g<y1;g+=5){x.beginPath();x.moveTo(ox,Y(g));x.lineTo(ox+(x1-x0)*sc,Y(g));x.stroke()}
-  const active=CAMRES[CAMIDX]&&CAMRES[CAMIDX].cam;
-  D_.cams.forEach((cm,i)=>{const col=SITE_COLORS[i%SITE_COLORS.length],on=cm.id===active;
-    x.beginPath();cm.fov.forEach((p,k)=>k?x.lineTo(X(p[0]),Y(p[1])):x.moveTo(X(p[0]),Y(p[1])));x.closePath();
-    x.globalAlpha=on?.28:.13;x.fillStyle=col;x.fill();x.globalAlpha=on?.9:.45;x.strokeStyle=col;x.lineWidth=on?2:1;x.stroke();x.globalAlpha=1;
-    x.fillStyle=col;x.beginPath();x.arc(X(cm.center[0]),Y(cm.center[1]),6,0,7);x.fill();
-    x.fillStyle='#fff';x.font='600 11px Segoe UI';x.textAlign='left';x.fillText(cm.id,X(cm.center[0])+9,Y(cm.center[1])+4)});
-  const k=siteFrameAt(t);let n=0;
-  if(k>=0){const cur=D_.frames[k].people;n=cur.length;
-    if(S.mlayers.trails){const t0=t-6;for(const p of cur){x.strokeStyle='rgba(61,220,151,.55)';x.lineWidth=2;x.beginPath();let st=false;
-      for(let j=k;j>=0&&D_.frames[j].t>=t0;j--){const q=D_.frames[j].people.find(r=>r.id===p.id);if(!q)continue;st?x.lineTo(X(q.x),Y(q.y)):(x.moveTo(X(q.x),Y(q.y)),st=true)}x.stroke()}}
-    for(const p of cur){x.fillStyle='#3DDC97';x.beginPath();x.arc(X(p.x),Y(p.y),5.5,0,7);x.fill();x.strokeStyle='#0B0F13';x.lineWidth=1.5;x.stroke();
-      x.fillStyle='#fff';x.font='600 11px Segoe UI';x.fillText('#'+p.id,X(p.x)+8,Y(p.y)+4)}}
-  MAP.shown=n}
 
 /* ---------- Upload ---------- */
 function setFile(f){if(!f)return;S.file=f;$('#src').value=f.name;

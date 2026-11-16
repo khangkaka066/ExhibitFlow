@@ -39,15 +39,13 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')   #
 
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ))
-sys.path.insert(0, str(Path(__file__).resolve().parent))   # site_runner.py cùng thư mục
 
 import uvicorn  # noqa: E402
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, Response  # noqa: E402
 
 from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
-import site_runner  # noqa: E402
 
 ALLOWED = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 MAX_BYTES = int(os.environ.get('EXHIBITFLOW_MAX_MB', '600')) * 1024 * 1024
@@ -410,135 +408,6 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
         if not j['path'].is_file():
             raise HTTPException(404, 'Không còn video')
         return FileResponse(j['path'])
-
-    # ------------------------------------------------------------------ nhiều camera đã hiệu chuẩn (hồ sơ địa điểm)
-    site_jobs = {}
-    SITE_MAX_SECONDS = float(os.environ.get('EXHIBITFLOW_SITE_MAX_SECONDS', '30'))     # cắt tối đa N giây đầu của mỗi video
-    SITE_STAGES = ['Cắt khung đã khử méo', 'Phát hiện người + ghép các camera', 'Hoàn tất']
-
-    def site_device():
-        dev = os.environ.get('EXHIBITFLOW_SITE_DEVICE')
-        if dev:
-            return dev
-        try:
-            import torch
-            return 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        except Exception:                                  # noqa: BLE001
-            return 'cpu'
-
-    def site_worker(job):
-        try:
-            site = site_runner.load_site(job['site'])
-            repo = site_runner.find_repo()
-            if repo is None:
-                raise RuntimeError('Không thấy repo multicam-2d-floorplan-tracker (đặt FLOORPLAN_DIR).')
-            job['stage'] = 0
-            work = state.root / 'sites' / job['id']
-            data_dir, n = site_runner.prepare_dataset(site, job['videos'], work / 'data', seconds=SITE_MAX_SECONDS, log=job['log'].append)
-            job['stage'], job['n'] = 1, n
-            out = site_runner.run_repo(repo, data_dir, work / 'out', n, site['room_id'], device=site_device(), log=job['log'].append)
-            if not (out / 'site_result.json').is_file():
-                raise RuntimeError('Pipeline map2d không tạo ra site_result.json')
-            job['out'], job['stage'], job['status'] = out, 2, 'done'
-        except BaseException as e:                         # noqa: BLE001
-            job['status'], job['error'] = 'error', f'{type(e).__name__}: {e}'
-            print('[site] LỖI: ' + job['error'], flush=True)
-
-    @app.get('/api/sites')
-    def sites():
-        return list(site_runner.list_sites().values())
-
-    @app.post('/api/site-match')
-    async def site_match(request: Request):
-        """Nhận diện địa điểm + camera từ vài khung hình của mỗi video. Form: v<i>_<j> = ảnh JPEG j của video i.
-        Trả {matched, site_id, name, assign: {chỉ số video: id camera}}. Không khớp (hoặc server chưa có repo) thì matched=false."""
-        import cv2
-        import numpy as np
-        form = await request.form()
-        groups = {}
-        for key, up in form.multi_items():
-            if not (key.startswith('v') and '_' in key and hasattr(up, 'read')):
-                continue
-            try:
-                i = int(key[1:].split('_')[0])
-                img = cv2.imdecode(np.frombuffer(await up.read(), np.uint8), cv2.IMREAD_COLOR)
-            except Exception:                              # noqa: BLE001
-                continue
-            if img is not None:
-                groups.setdefault(i, []).append(img)
-        n = (max(groups) + 1) if groups else 0
-        if not n or site_runner.find_repo() is None:
-            return {'matched': False}
-        r = site_runner.match_images([groups.get(i, []) for i in range(n)])
-        if not r:
-            return {'matched': False}
-        return {'matched': True, 'site_id': r['site_id'], 'name': r['name'], 'assign': {str(i): c for i, c in r['assign'].items()},
-                'scores': {str(i): v for i, v in r['scores'].items()}}
-
-    @app.post('/api/site-jobs')
-    async def create_site_job(request: Request):
-        """Form: site=<id>; mỗi camera một tệp video, tên trường = id camera (C1, C2...)."""
-        form = await request.form()
-        sid = str(form.get('site') or '')
-        try:
-            site = site_runner.load_site(sid)
-        except FileNotFoundError as e:
-            raise HTTPException(404, str(e))
-        if site_runner.find_repo() is None:
-            raise HTTPException(501, 'Chưa cài repo multicam-2d-floorplan-tracker trên server.')
-        if any(j['status'] == 'running' for j in site_jobs.values()):
-            raise HTTPException(409, 'Đang ghép camera cho một địa điểm khác, đợi xong.')
-        jid = uuid.uuid4().hex[:12]
-        videos = {}
-        for cam in site['cameras']:
-            up = form.get(cam)
-            if up is None or not getattr(up, 'filename', None):
-                continue
-            ext = Path(up.filename).suffix.lower()
-            check_ext(ext)
-            dst, size = uploads / f'{jid}_{cam}{ext}', 0
-            with open(dst, 'wb') as f:
-                while chunk := await up.read(1 << 20):
-                    size += len(chunk)
-                    if size > MAX_BYTES:
-                        f.close()
-                        dst.unlink(missing_ok=True)
-                        raise HTTPException(413, f'Video {cam} quá lớn (tối đa {MAX_BYTES >> 20} MB)')
-                    f.write(chunk)
-            videos[cam] = dst
-        if len(videos) < 1:
-            raise HTTPException(400, 'Cần ít nhất một video, đặt tên trường theo id camera: ' + ', '.join(site['cameras']))
-        job = dict(id=jid, site=sid, videos=videos, status='running', stage=0, error=None, log=[], out=None, n=0, t0=time.time())
-        site_jobs[jid] = job
-        threading.Thread(target=site_worker, args=(job,), daemon=True, name='site-job').start()
-        return {'job_id': jid, 'cameras': list(videos)}
-
-    def get_site_job(jid):
-        j = site_jobs.get(jid)
-        if j is None:
-            raise HTTPException(404, 'Không có job này')
-        return j
-
-    @app.get('/api/site-jobs/{jid}')
-    def site_job_status(jid: str):
-        j = get_site_job(jid)
-        return dict(status=j['status'], stage=j['stage'], stages=SITE_STAGES, error=j['error'], cameras=list(j['videos']),
-                    log=[l for l in j['log'][-8:]], elapsed=round(time.time() - j['t0']))
-
-    @app.get('/api/site-jobs/{jid}/result')
-    def site_job_result(jid: str):
-        j = get_site_job(jid)
-        if j['status'] != 'done':
-            raise HTTPException(409, 'Job chưa xong')
-        return FileResponse(j['out'] / 'site_result.json', media_type='application/json')
-
-    @app.get('/api/site-jobs/{jid}/video/{cam}')
-    def site_job_video(jid: str, cam: str):
-        j = get_site_job(jid)
-        p = j['videos'].get(cam)
-        if p is None or not Path(p).is_file():
-            raise HTTPException(404, 'Không có video camera này')
-        return FileResponse(p)
 
     # ------------------------------------------------------------------ Map 2D (multicam-2d-floorplan-tracker)
     @app.get('/api/jobs/{jid}/map')
