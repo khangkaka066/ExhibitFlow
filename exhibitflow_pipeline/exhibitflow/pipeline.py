@@ -149,6 +149,7 @@ def video_result(ctx, vpath, d, models, vlm_records, load_times):
             latency_s=r.get('latency_s'), infer_s=r.get('infer_s'), prefill_s=r.get('prefill_s'),
             queue_wait_s=r.get('queue_wait_s'), error=r.get('error')))
     labels = Counter(a['behavior'] for a in alerts)
+    diagnostics = ctx.inter.diagnostics() if hasattr(ctx.inter, 'diagnostics') else {}
     return dict(
         schema_version=SCHEMA_VERSION,
         generated_at=_dt.datetime.now().astimezone().isoformat(timespec='seconds'),
@@ -158,6 +159,7 @@ def video_result(ctx, vpath, d, models, vlm_records, load_times):
                      n_alerts=len(alerts), alerts_by_behavior=dict(labels), n_vlm_tasks=len(tasks),
                      has_anomaly=bool(alerts)),
         alerts=alerts, events=events, vlm_tasks=tasks,
+        diagnostics=diagnostics,
         artifacts=[dict(id=int(a['id']), label=a.get('label'), box=[round(float(v), 1) for v in a['box']],
                         pedestal=bool(a.get('pedestal'))) for a in ctx.art.artifacts],
         scenes=[dict(start_frame=int(s['start']), segment_frame=int(s['ref_idx']), n_artifacts=len(s['artifacts']))
@@ -167,6 +169,14 @@ def video_result(ctx, vpath, d, models, vlm_records, load_times):
         config=dict(version=settings.VERSION, models=describe_models(models), vlm=models['vlm'], load_times=load_times,
                     thresholds=dict(CFG=CFG, EXPORT=EXPORT), alarm_onset=settings.ALARM_ONSET,
                     environment=dict(python=platform.python_version(), gpus=settings.GPU_NAMES)))
+
+
+DIAGNOSTICS_COLS = ('scene_id', 'track_id', 'reason', 'count', 'frames_seen', 'near_frames', 'contact_frames', 'min_norm_dist')
+
+
+def _write_diagnostics_csv(path, ctx):
+    rows = ctx.inter.diagnostic_rows() if hasattr(ctx.inter, 'diagnostic_rows') else []
+    pd.DataFrame(rows, columns=DIAGNOSTICS_COLS).to_csv(path, index=False, encoding='utf-8')
 
 
 def _write_json(path, obj):
@@ -236,6 +246,7 @@ def run_pipeline(videos, out_dir=None, work_dir=None, config_files=(), overrides
                 res = video_result(ctx, vpath, d, models, recs, M.load_times)
                 vdir = ctx.dir
                 _write_json(vdir / 'result.json', res)
+                _write_diagnostics_csv(vdir / 'diagnostics.csv', ctx)
                 if clean_vlm_inputs:
                     shutil.rmtree(vdir / 'vlm_inputs', ignore_errors=True)
                 s = res['summary']

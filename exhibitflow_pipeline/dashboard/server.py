@@ -154,6 +154,11 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def get_settings():
         return state.settings
 
+    @app.get('/api/tuning/schema')
+    def get_tuning_schema():
+        from exhibitflow import tuning
+        return tuning.schema()
+
     @app.get('/api/models')
     def get_models():
         from dashboard.runner import models_info

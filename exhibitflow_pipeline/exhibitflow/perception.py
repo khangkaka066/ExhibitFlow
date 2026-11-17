@@ -3,6 +3,45 @@ from .common import *  # noqa: F401,F403
 from .prof import span as _span
 
 
+def _low_light_cfg(cfg=None):
+    """Đọc cấu hình low_light_boost (hỗ trợ dict hoặc bool)."""
+    base = dict(enabled=True, luma_thr=75.0, clip_limit=2.0, tile_grid=8)
+    raw = MODELS.get('detector', {}).get('low_light_boost') if cfg is None else cfg
+    if isinstance(raw, dict):
+        base.update(raw)
+    elif isinstance(raw, bool):
+        base['enabled'] = raw
+    elif raw is None:
+        base['enabled'] = False
+    return base
+
+
+def apply_low_light_boost(img, cfg=None):
+    """Tăng sáng nhẹ bằng CLAHE trên kênh L (LAB) khi độ sáng trung bình < ngưỡng; trả ảnh gốc nếu đủ sáng hoặc tắt."""
+    if img is None or getattr(img, 'ndim', 0) != 3 or img.shape[2] < 3:
+        return img
+    c = _low_light_cfg(cfg)
+    if not c.get('enabled', True):
+        return img
+    thr = float(c.get('luma_thr', 75.0))
+    h, w = img.shape[:2]
+    if max(h, w) > 320:
+        sample = img[::4, ::4]
+        mean_l = float(cv2.cvtColor(sample, cv2.COLOR_BGR2LAB)[:, :, 0].mean())
+        if mean_l >= thr:
+            return img
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    else:
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        if float(lab[:, :, 0].mean()) >= thr:
+            return img
+    tg = c.get('tile_grid', 8)
+    grid = (max(1, int(tg[0])), max(1, int(tg[1]))) if isinstance(tg, (tuple, list)) else (max(1, int(tg)), max(1, int(tg)))
+    clahe = cv2.createCLAHE(clipLimit=float(c.get('clip_limit', 2.0)), tileGridSize=grid)
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
 class Detector:
     def warmup(self):
         for _ in range(2):
@@ -22,11 +61,13 @@ def detector_preprocess(frame, size):
 @register('detector', 'yolox')
 class YoloxDetector(Detector):
     def __init__(self, device=GPU_A, conf=0.01, nms=0.7, exp=None, depth=0.33, width=0.5, num_classes=1,
-                 test_size=(608, 1088), ckpt='best_ckpt.pth', fp16=True, fuse=True, gpu_preproc=True, **_):
+                 test_size=(608, 1088), ckpt='best_ckpt.pth', fp16=True, fuse=True, gpu_preproc=True,
+                 low_light_boost=None, **_):
         ensure_tracker_repo()
         from yolox.exp import Exp, get_exp
         from yolox.utils import postprocess
         self.postprocess, self.device, self.conf, self.nms = postprocess, device, conf, nms
+        self.low_light_boost = low_light_boost
         if exp:      # file exp trong repo tracker (vd YOLOX-nano MOT17)
             self.exp = get_exp(str(settings.TRACKER_REPO / exp), None)
         else:        # checkpoint tự train: dựng YOLOX từ depth / width / num_classes (YOLOX-s = 0.33 / 0.5)
@@ -75,6 +116,7 @@ class YoloxDetector(Detector):
         return x, r
 
     def detect(self, frame):
+        frame = apply_low_light_boost(frame, getattr(self, 'low_light_boost', None))
         fh, fw = frame.shape[:2]
         with _span('detect.preprocess'):
             if self.gpu_preproc:
@@ -101,15 +143,18 @@ class YoloxDetector(Detector):
 class UltralyticsDetector(Detector):
     """YOLOv8 / YOLO11 / YOLO12 / RT-DETR (tên model chính thức tự tải, hoặc .pt tự train)."""
 
-    def __init__(self, weights='yolo11n.pt', device=GPU_A, conf=0.1, nms=0.5, imgsz=640, classes=(0,), half=True, **_):
+    def __init__(self, weights='yolo11n.pt', device=GPU_A, conf=0.1, nms=0.5, imgsz=640, classes=(0,), half=True,
+                 low_light_boost=None, **_):
         from ultralytics import YOLO, RTDETR
         w = resolve_weight(weights)
         self.model = (RTDETR if 'rtdetr' in Path(str(w)).name.lower() else YOLO)(str(w))
         self.kw = dict(conf=conf, iou=nms, imgsz=imgsz, classes=list(classes) if classes is not None else None,
                        device=device, half=bool(half and 'cuda' in str(device)), verbose=False)
+        self.low_light_boost = low_light_boost
         print(f'    Ultralytics {w} | imgsz={imgsz} classes={classes}')
 
     def detect(self, frame):
+        frame = apply_low_light_boost(frame, getattr(self, 'low_light_boost', None))
         boxes = self.model.predict(frame, **self.kw)[0].boxes
         if boxes is None or len(boxes) == 0:
             return []
@@ -117,14 +162,167 @@ class UltralyticsDetector(Detector):
         return [[float(a), float(b), float(c), float(d), float(s)] for (a, b, c, d), s in zip(xyxy, conf)]
 
 
-def _attach_scores(tracked, dets, min_iou=0.30):
-    """Chỉ giữ track khớp một detection ở frame này (như notebook gốc); score = conf detector."""
+def _unpack_track_item(item):
+    """Chuẩn hoá phần tử tracked thành (tid, box, meta_dict)."""
+    if isinstance(item, dict):
+        return int(item['id']), item['box'], item
+    if len(item) >= 3:
+        return int(item[0]), item[1], item[2] or {}
+    return int(item[0]), item[1], {}
+
+
+def _attach_scores(
+    tracked,
+    dets,
+    min_iou=0.30,
+    keep_predicted_frames=8,
+    stable_min_iou=0.15,
+    stable_frames=10,
+    score_decay=0.9,
+    track_state=None,
+):
+    """Gắn điểm detector cho track; dùng min_iou thấp hơn cho track ổn định và giữ track dự đoán tối đa keep_predicted_frames."""
     out = []
-    for tid, tb in tracked:
-        best = max(dets, key=lambda x: box_iou(tb, x[:4]), default=None)
-        if best is not None and box_iou(tb, best[:4]) >= min_iou:
-            out.append(dict(id=int(tid), box=[float(v) for v in tb], score=round(float(best[4]), 4), kp=None, kc=None))
+    keep_lim = max(0, int(keep_predicted_frames or 0))
+    decay = max(0.0, min(1.0, float(score_decay)))
+    stable_thr = int(stable_frames)
+    seen_ids = set()
+
+    for item in tracked:
+        tid, tb, meta = _unpack_track_item(item)
+        seen_ids.add(tid)
+        st = track_state.get(tid) if track_state is not None else None
+        seen_hits = max(int(st.get('hits', 0)) if st is not None else 0, int(meta.get('hits') or 0))
+        thr = (
+            min(float(min_iou), float(stable_min_iou))
+            if (stable_min_iou is not None and seen_hits >= stable_thr)
+            else float(min_iou)
+        )
+
+        best, best_iou = None, 0.0
+        if not meta.get('is_lost'):
+            for d in (dets or ()):
+                iou = box_iou(tb, d[:4])
+                if best is None or iou > best_iou:
+                    best, best_iou = d, iou
+
+        box_list = [float(v) for v in tb]
+        if best is not None and best_iou >= thr:
+            score = round(float(best[4]), 4)
+            if track_state is not None:
+                track_state[tid] = dict(
+                    hits=seen_hits + 1,
+                    score=score,
+                    base_score=score,
+                    pred_frames=0,
+                    absent=0,
+                    box=box_list,
+                )
+            out.append(dict(id=tid, box=box_list, score=score, predicted=False, predicted_frames=0, kp=None, kc=None))
+            continue
+
+        prev_pred = int(st.get('pred_frames', 0)) if st is not None else 0
+        pred_frames = int(meta['lost_frames']) if meta.get('lost_frames') is not None else (prev_pred + 1)
+        if keep_lim > 0 and 1 <= pred_frames <= keep_lim:
+            if st is not None and st.get('base_score') is not None:
+                base_score = float(st['base_score'])
+            elif meta.get('score') is not None:
+                base_score = float(meta['score'])
+            elif st is not None and st.get('score') is not None:
+                base_score = float(st['score'])
+            else:
+                base_score = 0.5
+            score = round(max(1e-4, base_score * (decay ** pred_frames)), 4)
+            if track_state is not None:
+                track_state[tid] = dict(
+                    hits=seen_hits,
+                    score=score,
+                    base_score=base_score,
+                    pred_frames=pred_frames,
+                    absent=0,
+                    box=box_list,
+                )
+            out.append(dict(
+                id=tid,
+                box=box_list,
+                score=score,
+                predicted=True,
+                predicted_frames=pred_frames,
+                kp=None,
+                kc=None,
+            ))
+        elif track_state is not None and st is not None:
+            st['pred_frames'] = pred_frames
+            st['absent'] = 0
+
+    if track_state is not None:
+        stale = []
+        for tid, st in track_state.items():
+            if tid not in seen_ids:
+                st['absent'] = int(st.get('absent', 0)) + 1
+                if st['absent'] > 120:
+                    stale.append(tid)
+        for tid in stale:
+            track_state.pop(tid, None)
     return out
+
+
+def extract_track_embedding(track):
+    """Lấy vector embedding ReID (ưu tiên smooth_feat, sau đó curr_feat/reid_feat/embedding) và chuẩn hoá L2."""
+    if track is None:
+        return None
+    for attr in ('smooth_feat', 'curr_feat', 'reid_feat', 'embedding', 'feat'):
+        val = track.get(attr) if isinstance(track, dict) else getattr(track, attr, None)
+        if val is None:
+            continue
+        arr = np.asarray(val, dtype=np.float32).reshape(-1)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            continue
+        norm = float(np.linalg.norm(arr))
+        if norm > 1e-6:
+            return (arr / norm).tolist()
+    return None
+
+
+def torso_hsv_histogram(img, box):
+    """Fallback đặc trưng ngoại hình khi tracker không lộ embedding OSNet: histogram màu HSV vùng thân (chuẩn hoá L2)."""
+    if img is None or getattr(img, 'ndim', 0) != 3 or img.shape[2] < 3 or box is None or len(box) < 4:
+        return None
+    x1, y1, x2, y2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+    w, h = x2 - x1, y2 - y1
+    if w <= 0.0 or h <= 0.0:
+        return None
+    ih, iw = img.shape[:2]
+    tx1 = max(0, int(round(x1 + 0.20 * w)))
+    tx2 = min(iw, int(round(x2 - 0.20 * w)))
+    ty1 = max(0, int(round(y1 + 0.18 * h)))
+    ty2 = min(ih, int(round(y1 + 0.60 * h)))
+    if tx2 - tx1 < 2 or ty2 - ty1 < 2:
+        tx1, tx2 = max(0, int(round(x1))), min(iw, int(round(x2)))
+        ty1, ty2 = max(0, int(round(y1))), min(ih, int(round(y2)))
+    if tx2 - tx1 < 1 or ty2 - ty1 < 1:
+        return None
+    hsv = cv2.cvtColor(img[ty1:ty2, tx1:tx2], cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1, 2], None, [16, 6, 4], [0, 180, 0, 256, 0, 256]).reshape(-1).astype(np.float32)
+    norm = float(np.linalg.norm(hist))
+    if norm <= 1e-6:
+        return None
+    return hist / norm
+
+
+def cosine_similarity(a, b):
+    """Cosine similarity giữa hai vector đặc trưng 1D (trả 0.0 nếu rỗng hoặc khác kích thước)."""
+    if a is None or b is None:
+        return 0.0
+    va = np.asarray(a, dtype=np.float32).reshape(-1)
+    vb = np.asarray(b, dtype=np.float32).reshape(-1)
+    if va.size == 0 or va.shape != vb.shape:
+        return 0.0
+    denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
+    if denom <= 1e-6 or not np.isfinite(denom):
+        return 0.0
+    val = float(np.dot(va, vb) / denom)
+    return val if math.isfinite(val) else 0.0
 
 
 def _ensure_reid_weights(folder: Path) -> Path:
@@ -204,12 +402,14 @@ def _profile_tracker(tr):
 
 @register('tracker', 'bytetrack_dma_ltc')
 class ByteTrackDMALTC:
-    """Tham số mặc định = `make track-video-full-torch` (tools/track_video_bench.py)."""
+    """Tham số mặc định = `make track-video-full-torch` (tools/track_video_bench.py), tinh chỉnh giảm ID switch và giữ track dự đoán."""
 
-    def __init__(self, device=GPU_A, with_reid=True, track_thresh=0.6, track_buffer=30, match_thresh=0.9,
-                 reid_model='osnet_x0_25', reid_ckpt='osnet_x0_25.pth', reid_weight=0.35, reid_thresh=0.7,
-                 ltc_ckpt='ltc_motion_mot17.pth', ltc_min_history=16, dma_ckpt='dma_gbm_mot17.gbm',
-                 min_box_area=100, max_aspect=1.6, extra_args=None, **_):
+    def __init__(self, device=GPU_A, with_reid=True, track_thresh=0.5, track_buffer=75, match_thresh=0.9,
+                 reid_model='osnet_x0_25', reid_ckpt='osnet_x0_25.pth', reid_weight=0.5, reid_thresh=0.6,
+                 ltc_ckpt='ltc_motion_mot17.pth', ltc_min_history=10, dma_ckpt='dma_gbm_mot17.gbm',
+                 min_box_area=100, max_aspect=1.6, keep_predicted_frames=8,
+                 attach_min_iou=0.30, attach_stable_min_iou=0.15, attach_stable_frames=10,
+                 predicted_score_decay=0.9, extra_args=None, **_):
         ensure_tracker_repo()
         if with_reid:
             # reid_ckpt=None + osnet_x1_0 -> tải osnet_x1_0_imagenet (cấu hình notebook gốc)
@@ -233,16 +433,24 @@ class ByteTrackDMALTC:
             ml='gbm', ml_weights=str(resolve_weight(dma_ckpt, required=True)), dma_device=device,
             **(extra_args or {}))
         self.min_box_area, self.max_aspect = min_box_area, max_aspect
+        self.keep_predicted_frames = int(keep_predicted_frames)
+        self.attach_min_iou = float(attach_min_iou)
+        self.attach_stable_min_iou = float(attach_stable_min_iou)
+        self.attach_stable_frames = int(attach_stable_frames)
+        self.predicted_score_decay = float(predicted_score_decay)
+        self._track_state = {}
         self.tracker = None
         print(f"    ByteTrack-DMA-LTC | ReID {reid_model if with_reid else 'off'} ({self.args.reid_model_path or '-'}) | "
               f"DMA {self.args.ml_weights} | LTC min_history={ltc_min_history} | "
-              f"thresh={track_thresh} match={match_thresh} buffer={track_buffer}")
+              f"thresh={track_thresh} match={match_thresh} buffer={track_buffer} "
+              f"reid_w={reid_weight} reid_thr={reid_thresh} keep_pred={self.keep_predicted_frames}")
 
     def reset(self, fps):
         from yolox.tracker.byte_tracker import BYTETracker
         from yolox.tracker.basetrack import BaseTrack
         BaseTrack._count = 0
         self.tracker = BYTETracker(self.args, frame_rate=int(round(fps)))
+        self._track_state = {}
         _single_thread_gbm(self.tracker)
         _profile_tracker(self.tracker)
         for name, ok in (('DMA GBM', getattr(self.tracker, 'dma', None) is not None),
@@ -250,6 +458,10 @@ class ByteTrackDMALTC:
                          ('ReID', getattr(self.tracker, 'reid_extractor', None) is not None or not self.args.with_reid)):
             if not ok:
                 print(f'    CẢNH BÁO: {name} không được nạp trong BYTETracker')
+
+    def _valid_track_box(self, t):
+        w, h = float(t.tlwh[2]), float(t.tlwh[3])
+        return w * h > self.min_box_area and not (self.max_aspect and w / max(h, 1e-6) > self.max_aspect)
 
     def update(self, dets, frame, native=None, S=1.0):
         # như make: tracker (ReID cắt ảnh người) chạy trên ảnh gốc -> đổi box sang toạ độ ảnh gốc rồi đổi lại
@@ -259,12 +471,66 @@ class ByteTrackDMALTC:
         arr[:, :4] *= s
         with _span('track.update'):                       # ReID + LTC + DMA + gán ID
             online = self.tracker.update(arr, (fh, fw), (fh, fw), frame=img)
-        keep = []
+        keep_pred = int(getattr(self, 'keep_predicted_frames', MODELS['tracker'].get('keep_predicted_frames', 8)))
+        track_state = getattr(self, '_track_state', None)
+        if track_state is None:
+            track_state = self._track_state = {}
+
+        keep, feats, online_ids = [], {}, set()
         for t in online:
-            w, h = t.tlwh[2], t.tlwh[3]
-            if w * h > self.min_box_area and not (self.max_aspect and w / max(h, 1e-6) > self.max_aspect):
-                keep.append((t.track_id, [float(v) / s for v in t.tlbr]))
-        return _attach_scores(keep, dets)
+            if not self._valid_track_box(t):
+                continue
+            tid = int(t.track_id)
+            online_ids.add(tid)
+            meta = dict(
+                is_lost=False,
+                score=getattr(t, 'score', None),
+                hits=getattr(t, 'tracklet_len', None),
+            )
+            keep.append((tid, [float(v) / s for v in t.tlbr], meta))
+            feat = extract_track_embedding(t)
+            if feat is not None:
+                feats[tid] = feat
+
+        if keep_pred > 0:
+            cur_fid = getattr(self.tracker, 'frame_id', None)
+            for t in getattr(self.tracker, 'lost_stracks', ()) or ():
+                tid = int(t.track_id)
+                if tid in online_ids or not getattr(t, 'is_activated', True) or not self._valid_track_box(t):
+                    continue
+                miss = getattr(t, 'missing_count', None)
+                if miss is not None and int(miss) > 0:
+                    lost_n = int(miss)
+                elif cur_fid is not None and hasattr(t, 'end_frame'):
+                    lost_n = max(1, int(cur_fid) - int(t.end_frame))
+                else:
+                    lost_n = None
+                meta = dict(
+                    is_lost=True,
+                    lost_frames=lost_n,
+                    score=getattr(t, 'score', None),
+                    hits=getattr(t, 'tracklet_len', None),
+                )
+                keep.append((tid, [float(v) / s for v in t.tlbr], meta))
+                feat = extract_track_embedding(t)
+                if feat is not None:
+                    feats[tid] = feat
+
+        out = _attach_scores(
+            keep,
+            dets,
+            min_iou=getattr(self, 'attach_min_iou', MODELS['tracker'].get('attach_min_iou', 0.30)),
+            keep_predicted_frames=keep_pred,
+            stable_min_iou=getattr(self, 'attach_stable_min_iou', MODELS['tracker'].get('attach_stable_min_iou', 0.15)),
+            stable_frames=getattr(self, 'attach_stable_frames', MODELS['tracker'].get('attach_stable_frames', 10)),
+            score_decay=getattr(self, 'predicted_score_decay', MODELS['tracker'].get('predicted_score_decay', 0.9)),
+            track_state=track_state,
+        )
+        if feats:
+            for r in out:
+                if r['id'] in feats:
+                    r['reid_feat'] = feats[r['id']]
+        return out
 
 
 class _RemoteProc:
@@ -436,6 +702,11 @@ class RemotePose(_RemoteProc):
 
     def __init__(self, startup_timeout=300, threads=4, **spec):
         super().__init__('pose', dict(spec, backend='ultralytics_pose'), startup_timeout, threads)
+        self._smoother = PoseSmoother()
+
+    def reset_prof(self):
+        super().reset_prof()
+        self._smoother.reset()
 
     def __call__(self, native, recs, S):
         if not recs:
@@ -444,6 +715,7 @@ class RemotePose(_RemoteProc):
         for rec, res in zip(recs, self._call(('pose', shape, [list(map(float, r['box'])) for r in recs], float(S)))):
             if res:
                 rec.update(res)
+        self._smoother.update(recs)
 
 
 class _UltralyticsTracker:
@@ -487,11 +759,19 @@ class UltralyticsBoTSORT(_UltralyticsTracker):
 class IoUTracker:
     """Baseline: ghép Hungarian theo IoU, giữ track mất tối đa max_age frame."""
 
-    def __init__(self, iou_thr=0.3, max_age=30, min_score=0.3, **_):
+    def __init__(self, iou_thr=0.3, max_age=30, min_score=0.3, keep_predicted_frames=0,
+                 attach_min_iou=0.30, attach_stable_min_iou=0.15, attach_stable_frames=10,
+                 predicted_score_decay=0.9, **_):
         self.iou_thr, self.max_age, self.min_score = iou_thr, max_age, min_score
+        self.keep_predicted_frames = int(keep_predicted_frames)
+        self.attach_min_iou = float(attach_min_iou)
+        self.attach_stable_min_iou = float(attach_stable_min_iou)
+        self.attach_stable_frames = int(attach_stable_frames)
+        self.predicted_score_decay = float(predicted_score_decay)
+        self._track_state = {}
 
     def reset(self, fps):
-        self.tracks, self.next_id = {}, 1
+        self.tracks, self.next_id, self._track_state = {}, 1, {}
 
     def update(self, dets, frame, **_):
         from scipy.optimize import linear_sum_assignment
@@ -503,30 +783,251 @@ class IoUTracker:
             for r, c in zip(*linear_sum_assignment(-M)):
                 if M[r, c] >= self.iou_thr:
                     matched_t.add(ids[r]), matched_d.add(c)
-                    self.tracks[ids[r]].update(box=dets[c][:4], age=0)
-                    out.append((ids[r], dets[c][:4]))
+                    st = self.tracks[ids[r]]
+                    st.update(box=dets[c][:4], age=0, score=float(dets[c][4]), hits=int(st.get('hits', 0)) + 1)
+                    out.append((ids[r], dets[c][:4], dict(is_lost=False, score=st['score'], hits=st['hits'])))
         for j, d in enumerate(dets):
             if j not in matched_d:
-                self.tracks[self.next_id] = dict(box=d[:4], age=0)
-                out.append((self.next_id, d[:4]))
+                self.tracks[self.next_id] = dict(box=d[:4], age=0, score=float(d[4]), hits=1)
+                out.append((self.next_id, d[:4], dict(is_lost=False, score=float(d[4]), hits=1)))
                 self.next_id += 1
         for t in ids:
             if t not in matched_t:
-                self.tracks[t]['age'] += 1
-                if self.tracks[t]['age'] > self.max_age:
+                st = self.tracks[t]
+                st['age'] += 1
+                if st['age'] > self.max_age:
                     del self.tracks[t]
-        return _attach_scores(out, dets)
+                elif self.keep_predicted_frames > 0 and st['age'] <= self.keep_predicted_frames:
+                    out.append((t, st['box'], dict(is_lost=True, lost_frames=st['age'], score=st.get('score'), hits=st.get('hits', 0))))
+        return _attach_scores(
+            out,
+            dets,
+            min_iou=self.attach_min_iou,
+            keep_predicted_frames=self.keep_predicted_frames,
+            stable_min_iou=self.attach_stable_min_iou,
+            stable_frames=self.attach_stable_frames,
+            score_decay=self.predicted_score_decay,
+            track_state=self._track_state,
+        )
 
 
 HAND_WB = {'left': slice(91, 112), 'right': slice(112, 133)}
 ARM_KP = (7, 8, 9, 10)
 TORSO_KP = (5, 6, 11, 12)
+WRIST_KP = (('left', 9), ('right', 10))
+
+
+class OneEuroFilter:
+    """Bộ lọc One-Euro cho toạ độ keypoint: mượt khi đứng yên, ít trễ khi chuyển động nhanh."""
+
+    def __init__(self, min_cutoff=1.5, beta=0.02, d_cutoff=1.0):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self._x_prev = None
+        self._dx_prev = None
+        self._t_prev = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-6))
+        return 1.0 / (1.0 + tau / max(dt, 1e-6))
+
+    def reset(self):
+        self._x_prev = None
+        self._dx_prev = None
+        self._t_prev = None
+
+    def __call__(self, x, t):
+        x = np.asarray(x, dtype=np.float64)
+        t = float(t)
+        if self._t_prev is None:
+            self._x_prev = x.copy()
+            self._dx_prev = np.zeros_like(x)
+            self._t_prev = t
+            return self._x_prev.copy()
+        dt = t - self._t_prev
+        if dt <= 0.0:
+            return self._x_prev.copy()
+        dx = (x - self._x_prev) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = a_d * dx + (1.0 - a_d) * self._dx_prev
+        cutoff = self.min_cutoff + self.beta * float(np.linalg.norm(dx_hat))
+        a = self._alpha(cutoff, dt)
+        x_hat = a * x + (1.0 - a) * self._x_prev
+        self._x_prev = x_hat
+        self._dx_prev = dx_hat
+        self._t_prev = t
+        return x_hat.copy()
+
+
+def interpolate_wrist_keypoints(seq, conf_thr=None, max_gap=None):
+    """Nội suy tuyến tính keypoint cổ tay cho khoảng mất <= max_gap frame trên chuỗi record theo frame."""
+    if not CFG.get('pose_smooth', True):
+        return seq
+    thr = float(CFG['pose_conf_thr'] if conf_thr is None else conf_thr)
+    gap_lim = int(CFG.get('pose_wrist_interp_max_gap', 8) if max_gap is None else max_gap)
+    if gap_lim <= 0:
+        return seq
+
+    items = list(seq.items()) if isinstance(seq, dict) else [
+        (it[0], it[1]) if isinstance(it, tuple) and len(it) == 2 else (idx, it)
+        for idx, it in enumerate(seq)
+    ]
+    by_track = defaultdict(list)
+    for fidx, rec in items:
+        if rec is None:
+            continue
+        tid = rec.get('id', 0)
+        by_track[int(tid)].append((int(fidx), rec))
+
+    for tid, track_seq in by_track.items():
+        track_seq.sort(key=lambda pair: pair[0])
+        for side, widx in WRIST_KP:
+            valid = [
+                (pos, fidx, np.asarray(rec['kp'][widx], dtype=np.float64))
+                for pos, (fidx, rec) in enumerate(track_seq)
+                if rec.get('kp') is not None and rec.get('kc') is not None and rec['kc'][widx] >= thr
+            ]
+            for (pos_a, fa, pa), (pos_b, fb, pb) in zip(valid, valid[1:]):
+                missing = fb - fa - 1
+                if missing <= 0 or missing > gap_lim:
+                    continue
+                span = float(fb - fa)
+                for pos in range(pos_a + 1, pos_b):
+                    f_cur, rec = track_seq[pos]
+                    if rec.get('kp') is None or rec.get('kc') is None or rec['kc'][widx] >= thr:
+                        continue
+                    alpha = (f_cur - fa) / span
+                    interp = (1.0 - alpha) * pa + alpha * pb
+                    kp = [list(map(float, pt)) for pt in rec['kp']]
+                    kp[widx] = [float(interp[0]), float(interp[1])]
+                    rec['kp'] = kp
+                    rec.setdefault('wrist_interp', {})[side] = True
+    return seq
+
+
+class PoseSmoother:
+    """Làm mượt One-Euro theo track_id (chỉ khi kc >= pose_conf_thr) và bù cổ tay mất <= 8 frame."""
+
+    def __init__(self, min_cutoff=None, beta=None, d_cutoff=None, max_gap=None):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.max_gap = max_gap
+        self._filters = {}      # (tid, k) -> OneEuroFilter
+        self._last_k_frame = {} # (tid, k) -> int
+        self._wrist_hist = {}   # (tid, side) -> deque([(frame_idx, np.ndarray)], maxlen=2)
+        self._track_seen = {}   # tid -> last frame_idx
+        self._step = -1
+
+    def reset(self):
+        self._filters.clear()
+        self._last_k_frame.clear()
+        self._wrist_hist.clear()
+        self._track_seen.clear()
+        self._step = -1
+
+    def _prune(self, fidx, keep_frames):
+        stale = [tid for tid, last_f in self._track_seen.items() if fidx - last_f > keep_frames]
+        if not stale:
+            return
+        stale_set = set(stale)
+        for tid in stale:
+            self._track_seen.pop(tid, None)
+        for key in [k for k in self._filters if k[0] in stale_set]:
+            self._filters.pop(key, None)
+            self._last_k_frame.pop(key, None)
+        for key in [k for k in self._wrist_hist if k[0] in stale_set]:
+            self._wrist_hist.pop(key, None)
+
+    def update(self, recs, frame_idx=None, fps=25.0):
+        if not CFG.get('pose_smooth', True) or not recs:
+            return recs
+        if frame_idx is None:
+            self._step += 1
+            fidx = self._step
+        else:
+            fidx = int(frame_idx)
+        fps_val = max(float(fps), 1e-3)
+        t = fidx / fps_val
+        thr = float(CFG['pose_conf_thr'])
+        min_c = float(CFG.get('pose_smooth_min_cutoff', 1.5) if self.min_cutoff is None else self.min_cutoff)
+        beta = float(CFG.get('pose_smooth_beta', 0.02) if self.beta is None else self.beta)
+        d_c = float(CFG.get('pose_smooth_d_cutoff', 1.0) if self.d_cutoff is None else self.d_cutoff)
+        max_gap = int(CFG.get('pose_wrist_interp_max_gap', 8) if self.max_gap is None else self.max_gap)
+        reset_gap = max(max_gap * 3, int(round(fps_val)))
+
+        for rec in recs:
+            tid = rec.get('id')
+            if tid is None or rec.get('_pose_smoothed') or rec.get('kp') is None or rec.get('kc') is None:
+                continue
+            tid = int(tid)
+            self._track_seen[tid] = fidx
+            kp = [list(map(float, pt)) for pt in rec['kp']]
+            kc = [float(c) for c in rec['kc']]
+
+            for k in range(len(kp)):
+                if k >= len(kc) or kc[k] < thr:
+                    continue
+                fk = (tid, k)
+                flt = self._filters.get(fk)
+                if flt is None:
+                    flt = self._filters[fk] = OneEuroFilter(min_c, beta, d_c)
+                else:
+                    flt.min_cutoff, flt.beta, flt.d_cutoff = min_c, beta, d_c
+                    if fidx - self._last_k_frame.get(fk, fidx) > reset_gap:
+                        flt.reset()
+                sm = flt(kp[k], t)
+                kp[k] = [float(sm[0]), float(sm[1])]
+                self._last_k_frame[fk] = fidx
+
+            if max_gap > 0:
+                box = rec.get('box')
+                box_h = max(float(box[3] - box[1]), 1.0) if box is not None else 100.0
+                for side, widx in WRIST_KP:
+                    if widx >= len(kp) or widx >= len(kc):
+                        continue
+                    wk = (tid, side)
+                    if kc[widx] >= thr:
+                        hist = self._wrist_hist.get(wk)
+                        if hist is None:
+                            hist = self._wrist_hist[wk] = deque(maxlen=2)
+                        hist.append((fidx, np.asarray(kp[widx], dtype=np.float64)))
+                    else:
+                        hist = self._wrist_hist.get(wk)
+                        if not hist:
+                            continue
+                        f1, p1 = hist[-1]
+                        gap = fidx - f1
+                        if 1 <= gap <= max_gap:
+                            est = p1
+                            if len(hist) >= 2:
+                                f0, p0 = hist[0]
+                                if f1 > f0 and (f1 - f0) <= max_gap:
+                                    delta = ((p1 - p0) / float(f1 - f0)) * float(gap)
+                                    norm = float(np.linalg.norm(delta))
+                                    max_shift = 0.5 * box_h
+                                    if norm > max_shift and norm > 1e-6:
+                                        delta = delta * (max_shift / norm)
+                                    est = p1 + delta
+                            kp[widx] = [float(est[0]), float(est[1])]
+                            rec.setdefault('wrist_interp', {})[side] = True
+
+            rec['kp'] = kp
+            rec['_pose_smoothed'] = True
+
+        self._prune(fidx, max(300, max_gap * 10))
+        return recs
 
 
 def _crop_box(rec, S, nw, nh):
     x1, y1, x2, y2 = [v * S for v in rec['box']]
     bw, bh = x2 - x1, y2 - y1
-    dx, dy = bw * CFG['pose_crop_pad_frac'], bh * CFG['pose_crop_pad_frac'] * 0.5
+    pad_frac = float(CFG['pose_crop_pad_frac'])
+    if rec.get('predicted') and CFG.get('pose_predicted_expand', True):
+        pad_frac += float(CFG['pose_crop_pad_frac'])
+    dx, dy = bw * pad_frac, bh * pad_frac * 0.5
     return (x1, y1, x2, y2), (max(0, int(x1 - dx)), max(0, int(y1 - dy)), min(nw, int(x2 + dx)), min(nh, int(y2 + dy)))
 
 
@@ -568,6 +1069,7 @@ class UltralyticsPose:
         self.device, self.batch = device, batch
         self.wide = CFG['pose_wide_retry'] if wide_retry is None else wide_retry
         self.imgsz = int(imgsz)
+        self._smoother = PoseSmoother()
         # gpu_preproc: letterbox + resize + chuẩn hoá + NMS chạy trên GPU thay vì ở CPU của Ultralytics (cv2.resize từng crop). Chiếm ~44% thời gian pose
         self.gpu_pp = bool(gpu_preproc and 'cuda' in str(device))
         if self.gpu_pp:
@@ -636,6 +1138,9 @@ class UltralyticsPose:
         for _ in range(2):
             self._predict([np.zeros((256, 128, 3), np.uint8)] * 2)
 
+    def reset_prof(self):
+        self._smoother.reset()
+
     def _wide_retry(self, native, rec, kp_native, kc, S):
         nh, nw = native.shape[:2]
         wx1, wy1, wx2, wy2 = _wide_crop(rec, S, nw, nh)
@@ -699,6 +1204,7 @@ class UltralyticsPose:
                     kp_native, kc, rec['pose_crop'], rec['pose_box'] = wide
             rec['kp'] = (kp_native / S).tolist()
             rec['kc'] = np.asarray(kc).tolist()
+        self._smoother.update(recs)
 
 
 def _hand_quality(kp_hand, kc_hand, conf_thr, min_diag_px):
@@ -835,6 +1341,13 @@ class RTMWWholebodyPose(RTMWHand):
     """1 model RTMW (133 điểm COCO-WholeBody) cho cả thân lẫn bàn tay: 17 điểm đầu = khung xương COCO17 (thay YOLO-pose),
     điểm 91-132 = 2 bàn tay. Dùng kèm hand=dict(backend='none') -> bỏ hẳn 1 lần chạy model / người / frame."""
 
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._smoother = PoseSmoother()
+
+    def reset_prof(self):
+        self._smoother.reset()
+
     def __call__(self, native, recs, S):
         nh, nw = native.shape[:2]
         for rec in recs:
@@ -858,6 +1371,7 @@ class RTMWWholebodyPose(RTMWHand):
                 hand_kc[side] = kc[sl].tolist()
                 hand_quality[side] = dict(status=q, n_visible=n_vis)
             rec.update(hand_kp=hand_kp, hand_kc=hand_kc, hand_quality=hand_quality)
+        self._smoother.update(recs)
 
 
 @register('hand', 'none')
@@ -869,3 +1383,147 @@ class NoHand:
 
     def __call__(self, native, recs, S):
         return None
+
+
+def check_person_box(rec, cfg=None, work_width=None):
+    """Kiểm tra score, diện tích quy đổi theo ảnh 960px và tỷ lệ w/h của một track box."""
+    pf = dict(RT.get('person_filter') or {})
+    if cfg is not None:
+        pf.update(cfg)
+    min_score = pf.get('display_min_score', 0.5)
+    score = rec.get('score')
+    if min_score is not None and score is not None and float(score) < float(min_score):
+        return False
+    box = rec.get('box')
+    if box is None or len(box) < 4:
+        return False
+    w = float(box[2]) - float(box[0])
+    h = float(box[3]) - float(box[1])
+    if w <= 0.0 or h <= 0.0:
+        return False
+    ref_w = float(CFG.get('width', 960) if work_width is None else work_width)
+    scale = 960.0 / max(ref_w, 1.0)
+    area_960 = (w * scale) * (h * scale)
+    if area_960 < float(pf.get('min_box_area', 600)):
+        return False
+    aspect_range = pf.get('aspect_range')
+    if aspect_range is not None:
+        aspect = w / h
+        if aspect < float(aspect_range[0]) or aspect > float(aspect_range[1]):
+            return False
+    return True
+
+
+def count_valid_keypoints(rec, conf_thr=None):
+    """Đếm số keypoint có độ tin cậy >= pose_conf_thr."""
+    thr = float(CFG['pose_conf_thr'] if conf_thr is None else conf_thr)
+    kp, kc = rec.get('kp'), rec.get('kc')
+    if kp is None or kc is None:
+        return 0
+    return sum(1 for c in kc if float(c) >= thr)
+
+
+class PersonTrackFilter:
+    """Bộ lọc track/box giả sau tracker (không ảnh hưởng đầu vào conf=0.01 của ByteTrack)."""
+
+    def __init__(self, cfg=None, work_width=None, pose_conf_thr=None):
+        self._cfg_override = cfg
+        self.work_width = work_width
+        self.pose_conf_thr = pose_conf_thr
+        self._hits = {}
+        self._last_seen = {}
+        self._pose_hist = {}
+        self._step = -1
+
+    def reset(self):
+        self._hits.clear()
+        self._last_seen.clear()
+        self._pose_hist.clear()
+        self._step = -1
+
+    def _cfg(self):
+        base = dict(RT.get('person_filter') or {})
+        if self._cfg_override:
+            base.update(self._cfg_override)
+        return base
+
+    def _next_frame(self, frame_idx):
+        if frame_idx is None:
+            self._step += 1
+            return self._step
+        return int(frame_idx)
+
+    def _prune(self, fidx, keep_frames=300):
+        stale = [tid for tid, last_f in self._last_seen.items() if fidx - last_f > keep_frames]
+        for tid in stale:
+            self._last_seen.pop(tid, None)
+            self._hits.pop(tid, None)
+            self._pose_hist.pop(tid, None)
+
+    def filter_pre_pose(self, tracks, frame_idx=None, work_width=None):
+        """Lọc trước khi chạy pose: score, diện tích 960px, tỷ lệ w/h và min_hits."""
+        cfg = self._cfg()
+        if not cfg.get('enabled', True):
+            return list(tracks or [])
+        if not tracks:
+            return []
+        fidx = self._next_frame(frame_idx)
+        w_ref = work_width if work_width is not None else (
+            self.work_width if self.work_width is not None else CFG.get('width', 960)
+        )
+        min_hits = max(1, int(cfg.get('min_hits', 3)))
+        kept = []
+        pred_min_score = cfg.get('predicted_min_score', 0.05)
+        for rec in tracks:
+            tid = int(rec['id'])
+            self._last_seen[tid] = fidx
+            if rec.get('predicted'):
+                if self._hits.get(tid, 0) < min_hits:
+                    continue
+                pred_cfg = dict(cfg, display_min_score=pred_min_score)
+                if not check_person_box(rec, cfg=pred_cfg, work_width=w_ref):
+                    continue
+                kept.append(rec)
+                continue
+            if not check_person_box(rec, cfg=cfg, work_width=w_ref):
+                continue
+            hits = self._hits.get(tid, 0) + 1
+            self._hits[tid] = hits
+            if hits >= min_hits:
+                kept.append(rec)
+        self._prune(fidx)
+        return kept
+
+    def filter_post_pose(self, tracks, posed_ids=None, frame_idx=None):
+        """Lọc sau khi chạy pose: yêu cầu >= min_valid_kpts trong >= 50% frame gần nhất khi đã có pose."""
+        cfg = self._cfg()
+        if not cfg.get('enabled', True):
+            return list(tracks or [])
+        if not tracks:
+            return []
+        min_kpts = int(cfg.get('min_valid_kpts', 5))
+        min_frac = float(cfg.get('pose_min_valid_frac', 0.5))
+        win = max(1, int(cfg.get('pose_window', 10)))
+        conf_thr = float(CFG['pose_conf_thr'] if self.pose_conf_thr is None else self.pose_conf_thr)
+        posed_set = None if posed_ids is None else {int(t) for t in posed_ids}
+        kept = []
+        for rec in tracks:
+            tid = int(rec['id'])
+            has_pose_eval = (
+                (tid in posed_set) or (rec.get('kp') is not None and rec.get('kc') is not None)
+                if posed_set is not None
+                else (rec.get('kp') is not None and rec.get('kc') is not None)
+            )
+            if has_pose_eval:
+                n_valid = count_valid_keypoints(rec, conf_thr=conf_thr)
+                hist = self._pose_hist.get(tid)
+                if hist is None or hist.maxlen != win:
+                    hist = self._pose_hist[tid] = deque(hist or (), maxlen=win)
+                hist.append(n_valid >= min_kpts)
+            hist = self._pose_hist.get(tid)
+            if hist:
+                frac = sum(1 for ok in hist if ok) / float(len(hist))
+                if frac < min_frac:
+                    continue
+            kept.append(rec)
+        return kept

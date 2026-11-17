@@ -42,12 +42,15 @@ GPU_B = 'cuda:1' if N_GPU >= 2 else GPU_A              # riêng VLM; chỉ 1 GPU
 # ckpt: tên file (tự tìm trong WEIGHT_ROOTS) hoặc đường dẫn đầy đủ.
 MODELS = dict(
     detector=dict(backend='yolox', device=GPU_A, conf=0.01, nms=0.7, fp16=True, fuse=True, gpu_preproc=True,
-                  exp=None, depth=0.33, width=0.5, num_classes=1, test_size=(608, 1088), ckpt='best_ckpt.pth'),
+                  exp=None, depth=0.33, width=0.5, num_classes=1, test_size=(608, 1088), ckpt='best_ckpt.pth',
+                  low_light_boost=dict(enabled=True, luma_thr=75.0, clip_limit=2.0, tile_grid=8)),
     tracker=dict(backend='bytetrack_dma_ltc', device=GPU_A, with_reid=True,
-                 track_thresh=0.6, track_buffer=30, match_thresh=0.9,
-                 reid_model='osnet_x0_25', reid_ckpt='osnet_x0_25.pth', reid_weight=0.35, reid_thresh=0.7,
-                 ltc_ckpt='ltc_motion_mot17.pth', ltc_min_history=16,
-                 dma_ckpt='dma_gbm_mot17.gbm', min_box_area=100, max_aspect=1.6),
+                 track_thresh=0.5, track_buffer=75, match_thresh=0.9,
+                 reid_model='osnet_x0_25', reid_ckpt='osnet_x0_25.pth', reid_weight=0.5, reid_thresh=0.6,
+                 ltc_ckpt='ltc_motion_mot17.pth', ltc_min_history=10,
+                 dma_ckpt='dma_gbm_mot17.gbm', min_box_area=100, max_aspect=1.6,
+                 keep_predicted_frames=8, attach_min_iou=0.30, attach_stable_min_iou=0.15,
+                 attach_stable_frames=10, predicted_score_decay=0.9),
     pose=dict(backend='ultralytics_pose', device=GPU_A, weights='yolov8n-pose.pt', batch=True),
     hand=dict(backend='rtmw', device='cuda' if N_GPU else 'cpu', mode='lightweight'),          # | dict(backend='none')
     # segmenter chạy 1 lần / video TRƯỚC pipeline rồi được giải phóng (trả VRAM cho VLM). Mask được cache theo video.
@@ -69,14 +72,34 @@ RT = dict(
                                 # (chỉ để đo latency/FPS: bỏ frame làm state machine mất chuỗi frame liên tục -> recall giảm mạnh)
     drop_frames=True,           # chỉ khi realtime=True: stage đầu còn bận -> bỏ frame thay vì trễ dần
     queue_size=8,               # độ dài queue giữa 2 stage
-    pose_gate_norm_dist=1.5,    # chỉ chạy pose + hand cho người có bbox cách hiện vật <= 1.5 x chiều cao người (None = mọi người).
+    pose_gate_norm_dist=2.0,    # chỉ chạy pose + hand cho người có bbox cách hiện vật <= 2.0 x chiều cao người (None = mọi người).
                                 # State machine chỉ bật NEAR khi cổ tay cách hiện vật <= state_near_thr (0.9) -> người xa hơn không thể tạo event.
     artifact_person_filter=True,  # segmentation: chạy detector trên frame segment để loại vùng là người
-    artifact_person_min_score=0.3,  # ... chỉ dùng box người có score >= 0.3 (detector chạy với conf 0.01 như make)
+    artifact_person_min_score=0.45,  # ... chỉ dùng box người có score >= 0.45 (detector chạy với conf 0.01 như make)
+    person_filter=dict(
+        enabled=True,              # lọc track/box giả sau tracker (không ảnh hưởng đầu vào ByteTrack)
+        display_min_score=0.5,     # điểm detector tối thiểu để hiển thị / chạy pose / tạo event
+        predicted_min_score=0.05,  # ngưỡng điểm tối thiểu cho track đã xác nhận khi đang dự đoán (score suy giảm)
+        min_hits=3,                # số frame hợp lệ tối thiểu trước khi qua lọc
+        min_box_area=600,          # diện tích bbox tối thiểu (px^2 trên ảnh làm việc 960px)
+        aspect_range=(0.2, 1.0),   # khoảng tỷ lệ w/h hợp lệ của bbox người
+        min_valid_kpts=5,          # số keypoint hợp lệ tối thiểu (kc >= pose_conf_thr) khi đã có pose
+        pose_min_valid_frac=0.5,   # tỷ lệ frame pose gần nhất đạt min_valid_kpts tối thiểu (>= 50%)
+        pose_window=10,            # số frame pose gần nhất dùng để kiểm tra tỷ lệ keypoint
+    ),
     seg_ref_default='auto',     # video không có trong SEG_REF_FRAMES: 'auto' = tự tách cảnh (cắt cảnh / đổi camera),
                                 # segment 1 frame cho mỗi cảnh | 'first' = chỉ frame đầu cho cả video
+    seg_multi_frame=dict(
+        enabled=True,           # segment nhiều frame mỗi cảnh và hợp nhất mask theo IoU
+        step_sec=2.0,           # khoảng cách giữa các frame lấy mẫu trong cảnh (giây)
+        max_frames_per_scene=4, # tối đa số frame lấy mẫu mỗi cảnh
+    ),
+    seg_merge_iou=0.5,          # ngưỡng IoU để hợp nhất mask cùng hiện vật giữa các frame trong cảnh
+    seg_merge_min_votes=2,      # giữ mask xuất hiện >= N frame (hoặc có điểm cao nhất)
     scene_cut_diff=25.0,        # 'auto': chênh lệch xám trung bình giữa 2 frame liền nhau (ảnh 64x36) >= ngưỡng -> cắt cảnh
                                 # (frame thường ~0-2, cắt cảnh ~30-50)
+    scene_color_cut=True,       # 'auto': bật tiêu chí cắt cảnh theo histogram màu (bắt đổi xám->màu / đổi sáng màu)
+    scene_color_hist_thr=0.35,  # 'auto': ngưỡng khoảng cách L1/2 histogram màu (H, S) [0..1] để cắt cảnh
     scene_step_sec=0.0,         # 'auto': so sánh mỗi N giây (0 = mọi frame, như benchmark). Dashboard đặt 0.2 để mở video nhanh hơn
     scene_min_sec=1.0,          # 'auto': cảnh ngắn hơn (vd vài frame chuyển cảnh) -> gộp vào cảnh sau
     scene_ref_offset_sec=0.5,   # 'auto': frame segment = đầu cảnh + 0.5s (tránh frame mờ lúc chuyển cảnh)
@@ -84,10 +107,41 @@ RT = dict(
     ring_seconds=20.0,          # ring buffer ảnh gốc để cắt ảnh cho VLM
     store_long=1280,            # cạnh dài ảnh lưu trong ring buffer (giới hạn RAM)
     vlm_early_sec=None,         # vd 2.0: gửi VLM ngay khi chạm liên tục 2s (báo động sớm), không đợi event kết thúc
+    periodic_vlm=dict(
+        enabled=True,           # đường dự phòng: ở vùng NEAR liên tục >= min_near_sec mà chưa có event -> vẫn gửi VLM
+        min_near_sec=3.0,       # thời gian tối thiểu ở vùng NEAR liên tục (giây)
+        cooldown_sec=3.0,       # khoảng cách tối thiểu giữa 2 lần gửi dự phòng cho cùng track
+        max_near_gap_frames=5,  # cho phép đứt quãng ngắn (pose/hand hụt vài frame) mà không reset bộ đếm NEAR
+    ),
+    missing_detect=dict(
+        enabled=True,               # đường dự phòng bắt stealing: phát hiện hiện vật biến mất khỏi vùng mask / người mang vật đi
+        check_sec=1.0,              # chu kỳ kiểm tra so với frame tham chiếu của cảnh (giây)
+        sustain_sec=1.5,            # thời gian thay đổi > change_thr liên tục để tạo event suspect_missing (giây)
+        max_side=160,               # thu nhỏ ảnh về cạnh dài tối đa 160px để chạy CPU nhẹ
+        change_thr=0.35,            # ngưỡng chênh lệch kết hợp (cạnh + màu) trên vùng mask hiện vật [0..1]
+        edge_weight=0.5,            # trọng số chênh lệch cạnh (Sobel) vs chênh lệch màu BGR
+        edge_diff_scale=64.0,       # hệ số chuẩn hoá chênh lệch độ lớn gradient cạnh về [0..1]
+        color_diff_scale=48.0,      # hệ số chuẩn hoá chênh lệch màu BGR về [0..1]
+        max_person_occlude=0.25,    # bỏ qua kiểm tra nếu tỷ lệ mask bị bbox người che > ngưỡng
+        person_range_norm=2.0,      # phải có người trong vòng <= person_range_norm x chiều cao người
+        global_luma_diff=25.0,      # bỏ qua khi đổi độ sáng toàn cục >= ngưỡng (chống FP đổi ánh sáng / scene cut)
+        global_hist_thr=0.35,       # bỏ qua khi histogram màu HSV toàn cục đổi >= ngưỡng
+        cooldown_sec=4.0,           # khoảng cách tối thiểu giữa 2 event suspect_missing cho cùng hiện vật / track
+        carry_detect=True,          # tín hiệu phụ: người tiếp cận rồi mang vật đi ra (khi mask bị che hoặc thiếu mask)
+        carry_change_thr=0.42,      # ngưỡng thay đổi vùng mang vật so với lúc mới xuất hiện
+        carry_sustain_sec=1.5,      # thời gian duy trì tín hiệu mang vật khi rời đi (giây)
+    ),
     limit_cpu_threads=False,    # mỗi stage là 1 thread Python: torch / OpenCV chỉ dùng 1 thread nội bộ (Kaggle chỉ có 4 vCPU,
                                 # để mặc định thì 7 stage x 4 thread tranh nhau CPU -> detect / track chậm hẳn)
     render_live=False,           # sink ghi video live (overlay + HUD FPS/latency)
-    alarm_show_sec=4.0,         # video live: thời gian giữ khung đỏ sau khi VLM báo
+    alarm_show_sec=4.0,         # video live: thời gian giữ khung đỏ sau khi VLM báo (khi alarm_persist=False)
+    alarm_persist=True,         # video live: giữ khung đỏ suốt video cho người đã bị gắn cờ ANOMALY (False = dùng alarm_show_sec)
+    flag_inherit=dict(
+        enabled=True,              # kế thừa cờ ANOMALY qua đổi ID bằng ReID + vị trí
+        reid_cos=0.7,              # ngưỡng cosine similarity tối thiểu (OSNet ReID hoặc fallback HSV)
+        max_gap_sec=3.0,           # chỉ kế thừa khi track cũ đã mất <= max_gap_sec giây
+        max_center_dist_norm=2.0,  # khoảng cách tâm bbox tối đa chuẩn hoá theo chiều cao người
+    ),
     stream_max_sec=1800.0,      # camera (RTSP / webcam): thời lượng tối đa mỗi lần chạy (giây); bấm Dừng để kết thúc sớm hơn
     vlm_sync=True,              # mode parallel: khi gửi đoạn cho VLM thì dừng cả luồng video, VLM trả lời xong mới chạy tiếp
                                 # (alert khớp với khung hình đang xem; thời gian dừng không tính vào FPS / latency)
@@ -109,29 +163,36 @@ RUN = dict(
 # ---------------- Ngưỡng thuật toán (giữ nguyên notebook benchmark) ----------------
 CFG = dict(
     width=960,
-    pose_crop_pad_frac=0.30, pose_min_crop_px=16, pose_conf_thr=0.30, pose_iou_match_thr=0.30, pose_margin_thr=0.15,
+    pose_crop_pad_frac=0.30, pose_predicted_expand=True, pose_min_crop_px=16, pose_conf_thr=0.30, pose_iou_match_thr=0.30, pose_margin_thr=0.15,
     hand_conf_thr=0.30, hand_min_bbox_diag_px=18, hand_small_use_center=True, hand_small_min_conf=0.5, hand_small_max_reach=0.6,
     pose_wide_retry=True, pose_wide_edge_frac=0.08, pose_wide_pad_x=0.7, pose_wide_pad_down=0.6,
     artifact_max_person_overlap=0.6, artifact_min_person_iou=0.4, artifact_max_motion=0.35, artifact_motion_samples=8,
     pairing_max_norm_dist=3.0,
     state_near_thr=0.9, state_contact_thr=0.35, state_hold_seconds=0.25, state_history_seconds=2.0,
-    state_lost_grace_frames=5,
+    state_lost_grace_frames=12,
+    state_hysteresis=True, state_hysteresis_mult=1.3,
+    pose_smooth=True, pose_smooth_min_cutoff=1.5, pose_smooth_beta=0.02, pose_smooth_d_cutoff=1.0,
+    pose_wrist_interp_max_gap=8,
     state_min_person_h_px=80, state_reject_rest_arm=True, rest_arm_max_dx=0.10, rest_arm_min_dy=-0.12,
     self_touch_head_frac=0.10, state_ground_max_gap=0.30,
     foot_from_pose=True, foot_extend_min_frac=0.15, foot_extend_max_frac=0.8,
     event_merge_gap_seconds=0.5, event_min_frames=12, max_tasks_per_video=40,
+    relaxed_gate=True,          # nới cổng chạm có kiểm soát (event ngắn / người nhỏ / bệ pedestal)
+    relaxed_event_min_frames=8, relaxed_min_person_h_px=60,
+    relaxed_hold_seconds=0.15, relaxed_pedestal_contact_thr=0.45,
 )
 SEGMENTATION_CFG = dict(
     sculpture_phrases=['statue', 'sculpture', 'bust'],
-    painting_phrases=['painting', 'framed artwork'],
+    painting_phrases=['painting', 'framed artwork', 'picture frame', 'artwork on wall', 'wall art', 'mounted painting'],
     pedestal_phrases=['pedestal'],
     full_thr=0.30, text_thr=0.25, mask_overlap=0.80, pedestal_merge=True,
     pedestal_point_frac=0.25, pedestal_max_area_ratio=4.0, pedestal_max_person_frac=0.30, min_mask_fill=0.15,
     merge_standalone_pedestal=True, pedestal_cover_merge=0.5,
     fallback_when_no_3d=True,
-    fallback_object_phrases=['stone', 'rock', 'artifact', 'small object', 'vase'],
+    fallback_object_phrases=['stone', 'rock', 'artifact', 'small object', 'vase', 'display case', 'glass cabinet', 'shelf'],
     fallback_pedestal_phrases=['pedestal', 'plinth', 'display stand', 'white box'],
-    fallback_thr=0.20, fallback_text_thr=0.20, fallback_max_area_frac=0.20, fallback_max_keep=4,
+    fallback_thr=0.20, fallback_empty_thr=0.15, fallback_lower_when_empty=True,
+    fallback_text_thr=0.20, fallback_max_area_frac=0.20, fallback_max_keep=4,
 )
 EXCLUDE_ARTIFACTS = {}   # {'video_key': [12]} — id như trong artifact_review.jpg (cảnh k: id + k*10000)
 MANUAL_ARTIFACTS = {}    # {'video_key': [[x1, y1, x2, y2]]} — toạ độ ảnh 960px, thêm vào cảnh đầu tiên

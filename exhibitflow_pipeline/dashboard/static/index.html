@@ -101,6 +101,13 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
 .f{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}.f label{color:var(--mut);font-size:12px}.f small{color:var(--mut);font-size:11px}
 .f input[type=text],.f input[type=number],.f select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
 .f.chk{flex-direction:row;align-items:center;gap:8px}
+.tgroup{border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px;background:var(--bg)}
+.tgroup-hd{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}
+.tgroup-hd b{font-size:14px}
+.tgroup-desc{color:var(--mut);font-size:12px;margin-bottom:12px}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.tbadge{padding:2px 7px;border-radius:5px;font-size:11px;font-weight:600;background:#33290f;color:var(--amber);border:1px solid #4a3b14}
+.tdef{color:var(--mut);font-size:11px;font-weight:400}
 .cal{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .cal canvas{width:100%;background:#05080f;border-radius:8px;cursor:crosshair;display:block}
 .toast{position:fixed;right:20px;bottom:20px;background:var(--card2);border:1px solid var(--line);padding:10px 16px;border-radius:9px;opacity:0;transition:.25s;pointer-events:none;z-index:20}
@@ -234,6 +241,13 @@ pre.log{margin:0;background:var(--bg);border-radius:8px;padding:10px;max-height:
       <div class="f"><label>Upload floorplan khác</label><input type="file" id="mapFile" accept="image/*"></div>
       <small style="color:var(--mut)">Hiệu chỉnh map: bấm 4 điểm trên khung hình video (ở trái), sau đó 4 điểm tương ứng trên map (ở phải), cùng thứ tự. Chọn điểm trên mặt sàn.</small>
     </div>
+  </div>
+  <div class="card" id="tuningCard">
+    <h2>Tinh chỉnh thuật toán &amp; Ngưỡng <span class="sp"></span>
+      <button class="btn" type="button" id="resetTuningAll" style="padding:4px 10px;font-size:12px;text-transform:none;letter-spacing:0">Khôi phục mặc định tất cả</button>
+    </h2>
+    <p style="color:var(--mut);font-size:12px;margin:0 0 12px">Các tham số của bộ lọc người, tracker, pose, cổng chạm, phát hiện mất vật và segmentation. Để trống ô số hoặc bấm khôi phục để dùng mặc định <code>settings.py</code>. Các mục gắn nhãn <span class="tbadge">Nạp lại model</span> sẽ tự nạp lại tracker/detector khi lưu.</p>
+    <div id="tuningGroups"><div style="color:var(--mut)">Đang tải danh sách tham số tinh chỉnh...</div></div>
   </div>
   <div class="card"><h2>Hiệu chỉnh vị trí video → map <span class="sp"></span>
       <button class="btn" id="calReset">Chọn lại</button><button class="btn" id="calIdent">Mặc định (toàn khung)</button></h2>
@@ -446,12 +460,67 @@ async function sys(){try{const s=await api('/api/system');const g=s.gpu&&s.gpu[0
 
 /* ---- settings ---- */
 const FIELDS=['vlm_backend','vlm_n_images','vlm_max_side','vlm_max_new_tokens','vlm_short_json','vlm_min_conf','pose_gate_norm_dist','queue_size','max_frames','alarm_show_sec','weights_dir','work_dir','use_cpu','map_image','scene_mode','pipeline_mode','make_map','vlm_prompt','vlm_system_prompt','realtime','drop_frames','limit_cpu_threads','tracker_process','hand_process','hand_batch'];
-let cal={v:[],m:[],H:null,frameImg:null,geo:null};
+let cal={v:[],m:[],H:null,frameImg:null,geo:null}, TSCHEMA=null;
+function renderTuning(schema, vals){
+  const box=$('#tuningGroups');
+  if(!schema||!schema.groups){box.innerHTML='<div style="color:var(--mut)">Không tải được schema tinh chỉnh.</div>';return}
+  const byG={};(schema.params||[]).forEach(p=>{(byG[p.group]=byG[p.group]||[]).push(p)});
+  box.innerHTML=(schema.groups||[]).map(g=>{
+    const ps=byG[g.id]||[];
+    const items=ps.map(p=>{
+      const defTxt=p.type==='bool'?(p.default?'Bật':'Tắt'):String(p.default);
+      const rbadge=p.needs_reload?' <span class="tbadge">Nạp lại model</span>':'';
+      if(p.type==='bool'){
+        return `<div class="f"><div class="f chk" style="margin-bottom:2px"><input type="checkbox" id="t-${esc(p.key)}" data-tkey="${esc(p.key)}"><label for="t-${esc(p.key)}" style="color:var(--tx)">${esc(p.label_vi)} <span class="tdef">(mặc định: ${esc(defTxt)})</span>${rbadge}</label></div><small>${esc(p.help_vi)}</small></div>`;
+      }
+      const attrs=[p.min!=null?`min="${p.min}"`:'',p.max!=null?`max="${p.max}"`:'',`step="${p.step!=null?p.step:(p.type==='int'?1:'any')}"`,`placeholder="${esc(defTxt)}"`].filter(Boolean).join(' ');
+      return `<div class="f"><label for="t-${esc(p.key)}">${esc(p.label_vi)} <span class="tdef">(mặc định: ${esc(defTxt)})</span>${rbadge}</label><input type="number" id="t-${esc(p.key)}" data-tkey="${esc(p.key)}" ${attrs}><small>${esc(p.help_vi)}</small></div>`;
+    }).join('');
+    return `<div class="tgroup" data-tgroup="${esc(g.id)}">
+      <div class="tgroup-hd"><b>${esc(g.title)}</b>${g.needs_reload?'<span class="tbadge">Nạp lại model</span>':''}<span style="flex:1"></span>
+        <button class="btn" type="button" data-reset-group="${esc(g.id)}" style="padding:3px 9px;font-size:11px">Khôi phục mặc định</button></div>
+      <div class="tgroup-desc">${esc(g.description||'')}</div>
+      <div class="tgrid">${items}</div></div>`;
+  }).join('');
+  applyTuningValues(vals);
+}
+function applyTuningValues(vals){
+  if(!TSCHEMA)return;
+  const t=(vals&&typeof vals==='object')?vals:{};
+  (TSCHEMA.params||[]).forEach(p=>{
+    const el=document.getElementById('t-'+p.key);if(!el)return;
+    const has=Object.prototype.hasOwnProperty.call(t,p.key)&&t[p.key]!=null&&t[p.key]!=='';
+    if(p.type==='bool')el.checked=has?!!t[p.key]:!!p.default;
+    else el.value=has?t[p.key]:p.default;
+  });
+}
+function resetTuningGroup(gid){
+  if(!TSCHEMA)return;
+  (TSCHEMA.params||[]).filter(p=>!gid||p.group===gid).forEach(p=>{
+    const el=document.getElementById('t-'+p.key);if(!el)return;
+    if(p.type==='bool')el.checked=!!p.default;else el.value=p.default;
+  });
+}
+function collectTuning(){
+  const out={};if(!TSCHEMA)return out;
+  (TSCHEMA.params||[]).forEach(p=>{
+    const el=document.getElementById('t-'+p.key);if(!el)return;
+    if(p.type==='bool'){if(el.checked!==!!p.default)out[p.key]=el.checked;return}
+    const raw=el.value.trim();if(raw==='')return;
+    const v=Number(raw);if(Number.isNaN(v))throw new Error('Giá trị không hợp lệ ở '+p.key);
+    if(v!==Number(p.default))out[p.key]=v;
+  });
+  return out;
+}
+$('#tuningGroups').onclick=e=>{const b=e.target.closest('[data-reset-group]');if(b){resetTuningGroup(b.dataset.resetGroup);toast('Đã đặt lại nhóm về mặc định — bấm Lưu cài đặt để áp dụng')}};
+$('#resetTuningAll').onclick=()=>{resetTuningGroup(null);toast('Đã đặt lại toàn bộ tinh chỉnh — bấm Lưu cài đặt để áp dụng')};
 async function openSettings(){
-  SET=await api('/api/settings');
+  const [setData,schemaData]=await Promise.all([api('/api/settings'),TSCHEMA?Promise.resolve(TSCHEMA):api('/api/tuning/schema').catch(()=>null)]);
+  SET=setData;if(schemaData)TSCHEMA=schemaData;
   const mi=$('#s-map_image');[...mi.options].forEach(o=>{if(!['auto','none'].includes(o.value))o.remove()});
   if(!['auto','none'].includes(SET.map_image)){const o=new Option('Upload: '+SET.map_image,SET.map_image);mi.add(o)}
   FIELDS.forEach(k=>{const e=$('#s-'+k);if(e.type==='checkbox')e.checked=!!SET[k];else e.value=SET[k]??''});
+  renderTuning(TSCHEMA,SET.tuning);
   try{MD=await api('/api/models')}catch{MD=null}
   if(MD){if(!SET.vlm_prompt)$('#s-vlm_prompt').value=MD.prompt.vlm;if(!SET.vlm_system_prompt)$('#s-vlm_system_prompt').value=MD.prompt.system}
   cal.v=[];cal.m=[];
@@ -479,10 +548,12 @@ $('#s-map_image').onchange=async()=>{await api('/api/settings',{method:'PUT',hea
 $('#resetPrompt').onclick=()=>{if(MD)$('#s-vlm_prompt').value=MD.prompt.vlm};
 $('#resetSys').onclick=()=>{if(MD)$('#s-vlm_system_prompt').value=MD.prompt.system};
 $('#saveSet').onclick=async()=>{
-  const body={homography:SET.homography};
-  FIELDS.forEach(k=>{const e=$('#s-'+k);let v=e.type==='checkbox'?e.checked:e.type==='number'?(e.value===''?null:+e.value):e.value;body[k]=v});
-  if(MD){if((body.vlm_prompt||'').trim()===MD.prompt.vlm.trim())body.vlm_prompt='';if((body.vlm_system_prompt||'').trim()===MD.prompt.system.trim())body.vlm_system_prompt=''}   // giống mặc định -> lưu trống
-  try{SET=await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Đã lưu cài đặt');loadMap()}catch(x){toast('Lỗi: '+x.message)}};
+  try{
+    const body={homography:SET.homography,tuning:collectTuning()};
+    FIELDS.forEach(k=>{const e=$('#s-'+k);let v=e.type==='checkbox'?e.checked:e.type==='number'?(e.value===''?null:+e.value):e.value;body[k]=v});
+    if(MD){if((body.vlm_prompt||'').trim()===MD.prompt.vlm.trim())body.vlm_prompt='';if((body.vlm_system_prompt||'').trim()===MD.prompt.system.trim())body.vlm_system_prompt=''}   // giống mặc định -> lưu trống
+    SET=await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('Đã lưu cài đặt');loadMap();
+  }catch(x){toast('Lỗi: '+x.message)}};
 
 const modelRows=L=>L.map(m=>`<div><b>${esc(m.role)}</b><span>${esc(m.name)}<small>${esc(m.detail||'')}</small></span></div>`).join('');
 api('/api/models').then(d=>{MD=d;$('#modelList').innerHTML=modelRows(d.models)}).catch(()=>{});

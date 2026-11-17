@@ -9,6 +9,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -17,6 +18,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+_PROJ = str(Path(__file__).resolve().parents[1])
+if _PROJ not in sys.path:
+    sys.path.insert(0, _PROJ)
+from exhibitflow import tuning as _tuning  # noqa: E402
 
 SEVERITY = {'stealing': 'high', 'holding': 'medium', 'touching': 'low'}
 
@@ -44,10 +50,22 @@ DEFAULT_SETTINGS = dict(
     make_map=False,                   # True: tự tạo map 2D từ video khi phân tích (mất ~15-25 s lần đầu, cache theo video). Mặc định tắt
     map_image='auto',                 # 'auto' (tạo từ video khi phân tích; trống lúc đầu) | 'none' | tên file đã upload (hiệu chỉnh tay)
     homography=dict(src=[[0, 0], [1, 0], [1, 1], [0, 1]], dst=[[0, 0], [1, 0], [1, 1], [0, 1]]),
+    # --- tinh chỉnh thuật toán (registry exhibitflow/tuning.py) ---
+    tuning=dict(),
 )
 
 
+def _deep_merge(dst, src):
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
 def overrides_from_settings(s):
+    ov = _tuning.tuning_overrides(s.get('tuning') or {}, include_defaults=True)
     vlm = dict(n_images=int(s['vlm_n_images']), max_side=int(s['vlm_max_side']),
                max_new_tokens=int(s['vlm_max_new_tokens']), short_json=bool(s['vlm_short_json']))
     tracker = dict(backend='bytetrack_dma_ltc_proc', threads=max(1, int(s.get('tracker_threads') or 1))) if s.get('tracker_process') \
@@ -62,11 +80,12 @@ def overrides_from_settings(s):
         pose = dict(backend='ultralytics_pose_proc', threads=max(1, int(s.get('pose_threads') or 1))) if s.get('pose_process') \
             else dict(backend='ultralytics_pose')
         pose['gpu_preproc'] = bool(s.get('pose_gpu_preproc'))
-    ov = dict(models=dict(vlm=vlm, tracker=tracker, pose=pose, hand=hand),
-              rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
-                      alarm_show_sec=float(s['alarm_show_sec']), realtime=bool(s.get('realtime')),
-                      limit_cpu_threads=bool(s.get('limit_cpu_threads')),
-                      drop_frames=bool(s.get('drop_frames', True))))
+    legacy = dict(models=dict(vlm=vlm, tracker=tracker, pose=pose, hand=hand),
+                  rt=dict(pose_gate_norm_dist=float(s['pose_gate_norm_dist']) or None, queue_size=int(s['queue_size']),
+                          alarm_show_sec=float(s['alarm_show_sec']), realtime=bool(s.get('realtime')),
+                          limit_cpu_threads=bool(s.get('limit_cpu_threads')),
+                          drop_frames=bool(s.get('drop_frames', True))))
+    _deep_merge(ov, legacy)
     if s.get('vlm_min_conf') not in (None, ''):
         ov['vlm_min_conf'] = float(s['vlm_min_conf'])
     if s.get('weights_dir'):
@@ -74,8 +93,12 @@ def overrides_from_settings(s):
     return ov
 
 
-MODEL_KEYS = ('tracker_process', 'hand_process', 'pose_process', 'pose_gpu_preproc', 'tracker_threads', 'hand_threads', 'pose_threads', 'hand_batch', 'vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json', 'weights_dir',
-              'use_cpu', 'work_dir')
+MODEL_KEYS = (
+    'tracker_process', 'hand_process', 'pose_process', 'pose_gpu_preproc',
+    'tracker_threads', 'hand_threads', 'pose_threads', 'hand_batch',
+    'vlm_backend', 'vlm_n_images', 'vlm_max_side', 'vlm_max_new_tokens', 'vlm_short_json',
+    'weights_dir', 'use_cpu', 'work_dir',
+) + _tuning.RELOAD_KEYS
 
 
 def need_components(s):
@@ -84,7 +107,11 @@ def need_components(s):
 
 
 def model_key(s):
-    return tuple(str(s.get(k)) for k in MODEL_KEYS)
+    t = s.get('tuning') if isinstance(s.get('tuning'), dict) else {}
+    return tuple(
+        str(_tuning.resolve_value(t, k) if k in _tuning.PARAMS_BY_KEY else s.get(k))
+        for k in MODEL_KEYS
+    )
 
 
 def auto_map(s):
@@ -156,6 +183,8 @@ class State:
                 pass
         if self.settings.get('map_image') in ('default', ''):    # cài đặt cũ (map mặc định CITIC) -> map tự tạo
             self.settings['map_image'] = 'auto'
+        if not isinstance(self.settings.get('tuning'), dict):
+            self.settings['tuning'] = {}
         self.models_stage = lambda: ''                      # runner gắn hàm trả tiến độ nạp
         self.models_state, self.models_msg = 'idle', ''     # idle | loading | ready | error (độc lập với lần chạy video)
         self.map_version = 0                                # tăng mỗi khi map tự tạo đổi / bị xoá -> giao diện tải lại ảnh
@@ -165,9 +194,12 @@ class State:
         for k in ('vlm_prompt',):
             if (new.get(k) or '').strip():
                 validate_prompt(new[k])                        # ValueError -> server trả 400, không lưu
+        clean_tuning = _tuning.validate_tuning(new['tuning']) if 'tuning' in new else None
         with self.lock:
             for k, v in new.items():
-                if k in DEFAULT_SETTINGS:
+                if k == 'tuning':
+                    self.settings['tuning'] = clean_tuning
+                elif k in DEFAULT_SETTINGS:
                     self.settings[k] = v
             self.settings_path.write_text(json.dumps(self.settings, indent=2), encoding='utf-8')
         return self.settings
@@ -466,7 +498,7 @@ class PipelineRunner:
             frames, artifacts, scenes = dict(st.timeline), list(st.artifacts), list(st.scene_contours)
             alerts_ui = list(st.alerts)
         keep = ('pipeline_mode', 'scene_mode', 'max_frames', 'queue_size', 'pose_gate_norm_dist', 'vlm_backend', 'vlm_n_images',
-                'vlm_max_side', 'vlm_max_new_tokens', 'map_image')
+                'vlm_max_side', 'vlm_max_new_tokens', 'map_image', 'tuning')
         info = dict(id=rid, created=time.strftime('%Y-%m-%d %H:%M:%S'),
                     video=dict(name=v.get('name'), path=str(Path(video).resolve()), size_mb=size_mb, fps=v.get('fps'),
                                n_frames=v.get('n_frames'), width=v.get('width'), height=v.get('height'),

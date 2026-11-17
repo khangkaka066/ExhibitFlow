@@ -235,8 +235,11 @@ class GroundingDinoSAM:
         if boxes:
             add_candidates(boxes, labels, scores, 0)
         if C.get('fallback_when_no_3d') and not any(_is_3d(a['label']) for a in artifacts):
+            fb_thr = (C.get('fallback_empty_thr', 0.15)
+                      if (C.get('fallback_lower_when_empty', True) and not artifacts)
+                      else C['fallback_thr'])
             fb = self.detect(rgb, C['fallback_object_phrases'] + C['fallback_pedestal_phrases'],
-                             C['fallback_thr'], C['fallback_text_thr'])
+                             fb_thr, C['fallback_text_thr'])
             if fb[0]:
                 add_candidates(*fb, 500, max_keep=C['fallback_max_keep'], max_area=C['fallback_max_area_frac'], fallback=True)
         if C.get('merge_standalone_pedestal'):
@@ -316,9 +319,103 @@ def cuda_check(where):
 SCENE_ID_STEP = 10000    # id hiện vật của cảnh k = id gốc + k * 10000
 
 
-def artifact_cache_dir(key, seg_spec, ref_idx):
-    tag = spec_tag(dict(seg=seg_spec, cfg=SEGMENTATION_CFG, ref=int(ref_idx), w=CFG['width']))
+def artifact_cache_dir(key, seg_spec, ref_idx, sample_idxs=None):
+    refs = [int(i) for i in (sample_idxs if sample_idxs is not None else [ref_idx])]
+    tag = spec_tag(dict(
+        v=2,
+        seg=seg_spec,
+        cfg=SEGMENTATION_CFG,
+        ref=int(ref_idx),
+        refs=refs,
+        w=CFG['width'],
+        mf=RT.get('seg_multi_frame'),
+        iou=RT.get('seg_merge_iou', 0.5),
+        mv=RT.get('seg_merge_min_votes', 2),
+    ))
     return settings.CACHE / f'{key}_artifacts_{tag}'
+
+
+def mask_iou(a, b):
+    """Tính IoU giữa 2 mask boolean 2D."""
+    inter = int(np.logical_and(a, b).sum())
+    if inter == 0:
+        return 0.0
+    union = int(np.logical_or(a, b).sum())
+    return inter / union if union > 0 else 0.0
+
+
+def merge_masks(frame_results, iou_thr=0.5, min_votes=2):
+    """Hợp nhất mask qua nhiều frame trong 1 cảnh theo IoU >= iou_thr.
+    frame_results: list [(frame_idx, artifacts, masks)] hoặc [(artifacts, masks)].
+    Giữ cụm mask xuất hiện ở >= min_votes frame khác nhau hoặc cụm có điểm cao nhất."""
+    candidates = []
+    for idx, item in enumerate(frame_results):
+        if len(item) == 3:
+            fidx, arts, masks = item
+        else:
+            fidx, (arts, masks) = idx, item
+        for a in arts:
+            mk = masks.get(a['id'])
+            if mk is None or not np.any(mk):
+                continue
+            candidates.append((int(fidx), dict(a), np.asarray(mk, dtype=bool)))
+    if not candidates:
+        return [], {}
+
+    candidates.sort(key=lambda x: (-float(x[1].get('score', 0.0)), x[0], int(x[1].get('id', 0))))
+    clusters = []
+    for fidx, art, mk in candidates:
+        best_cl, best_iou = None, -1.0
+        for cl in clusters:
+            if fidx in cl['frames']:
+                continue
+            iou = mask_iou(mk, cl['rep_mask'])
+            if iou >= iou_thr and iou > best_iou:
+                best_cl, best_iou = cl, iou
+        if best_cl is not None:
+            best_cl['members'].append((fidx, art, mk))
+            best_cl['frames'].add(fidx)
+        else:
+            clusters.append(dict(rep_mask=mk, members=[(fidx, art, mk)], frames={fidx}))
+
+    kept_clusters = [cl for cl in clusters if len(cl['frames']) >= min_votes or cl is clusters[0]]
+    merged_arts, merged_masks = [], {}
+    for new_id, cl in enumerate(kept_clusters):
+        members = cl['members']
+        n = len(members)
+        if n >= 3:
+            votes_px = np.sum([m.astype(np.int32) for _, _, m in members], axis=0)
+            mk = votes_px >= ((n + 1) // 2)
+            if not mk.any():
+                mk = members[0][2].copy()
+        else:
+            mk = members[0][2].copy()
+        ys, xs = np.nonzero(mk)
+        if len(ys) == 0:
+            continue
+        best = dict(members[0][1])
+        best.update(
+            id=new_id,
+            box=[float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)],
+            pedestal=any(bool(a.get('pedestal')) for _, a, _ in members),
+            fallback=all(bool(a.get('fallback')) for _, a, _ in members),
+            votes=len(cl['frames']),
+        )
+        merged_arts.append(best)
+        merged_masks[new_id] = mk
+    return merged_arts, merged_masks
+
+
+def scene_sample_frames(start, ref, end, fps, is_live=False, explicit_ref=False):
+    """Chọn các frame lấy mẫu để segment trong 1 cảnh [start, end] theo RT['seg_multi_frame']."""
+    mf = RT.get('seg_multi_frame') or {}
+    if is_live or explicit_ref or not mf.get('enabled', True):
+        return [int(ref)]
+    step_sec = float(mf.get('step_sec', 2.0) or 2.0)
+    max_f = max(1, int(mf.get('max_frames_per_scene', 4) or 1))
+    step = max(1, int(round(step_sec * (fps or 25.0))))
+    idxs = list(range(int(ref), int(end) + 1, step))[:max_f]
+    return idxs or [int(ref)]
 
 
 def read_frames(d, idxs):
@@ -343,17 +440,31 @@ def read_frames(d, idxs):
     return out
 
 
-def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, max_frames=None, step_sec=0.0):
+def _color_hist_hsv(bgr_small):
+    """Histogram màu (H, S) chuẩn hoá L1 trên ảnh nhỏ; gán H=0 khi S < 12 để tránh nhiễu xám."""
+    hsv = cv2.cvtColor(bgr_small, cv2.COLOR_BGR2HSV)
+    h = hsv[:, :, 0]
+    s = hsv[:, :, 1]
+    h[s < 12] = 0
+    hist = cv2.calcHist([hsv], [0, 1], None, [16, 16], [0, 180, 0, 256]).astype(np.float32)
+    tot = float(hist.sum())
+    return hist / tot if tot > 0 else hist
+
+
+def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, max_frames=None, step_sec=0.0,
+                  color_hist_thr=None):
     """Tách video thành các cảnh (cắt cảnh / đổi camera) -> [(start_frame, ref_frame)].
-    Cắt cảnh = chênh lệch xám trung bình (ảnh 64x36) giữa 2 mẫu liền nhau >= diff_thr.
+    Cắt cảnh = chênh lệch xám trung bình (ảnh 64x36) >= diff_thr hoặc khoảng cách L1/2 histogram màu (H, S) >= color_hist_thr.
     Cảnh ngắn hơn min_scene_sec được gộp vào cảnh sau; ref = đầu cảnh + ref_offset_sec.
     step_sec > 0: vẫn giải mã mọi frame (grab) nhưng chỉ chuyển màu + resize + so sánh mỗi step_sec giây -> nhanh hơn nhiều
     trên video dài. An toàn vì cảnh ngắn hơn min_scene_sec bị gộp; mốc cắt lệch tối đa step_sec."""
+    if color_hist_thr is None:
+        color_hist_thr = float(RT.get('scene_color_hist_thr', 0.35)) if RT.get('scene_color_cut', True) else 0.0
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     min_len = max(1, int(min_scene_sec * fps))
     step = max(1, int(round(step_sec * fps))) if step_sec and step_sec > 0 else 1
-    segs, prev, idx = [[0, 0]], None, 0          # [frame bắt đầu, mốc đặt ref]
+    segs, prev_g, prev_h, idx = [[0, 0]], None, None, 0          # [frame bắt đầu, mốc đặt ref]
     try:
         while max_frames is None or idx < max_frames:
             if step > 1 and idx % step:
@@ -364,13 +475,18 @@ def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, ma
             ok, f = cap.read()
             if not ok:
                 break
-            g = cv2.cvtColor(cv2.resize(f, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            if prev is not None and float(np.abs(g - prev).mean()) >= diff_thr:
+            small = cv2.resize(f, (64, 36), interpolation=cv2.INTER_AREA)
+            g = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            h = _color_hist_hsv(small) if color_hist_thr and color_hist_thr > 0 else None
+            gray_cut = prev_g is not None and float(np.abs(g - prev_g).mean()) >= diff_thr
+            color_cut = (prev_h is not None and h is not None
+                         and 0.5 * float(np.abs(h - prev_h).sum()) >= color_hist_thr)
+            if gray_cut or color_cut:
                 if idx - segs[-1][1] < min_len:
                     segs[-1][1] = idx                 # cảnh trước quá ngắn -> chỉ dời mốc ref
                 else:
                     segs.append([idx, idx])
-            prev, idx = g, idx + 1
+            prev_g, prev_h, idx = g, h, idx + 1
     finally:
         cap.release()
     out = []
@@ -380,17 +496,22 @@ def detect_scenes(path, diff_thr=25.0, min_scene_sec=1.0, ref_offset_sec=0.5, ma
     return out
 
 
+def _seg_ref_spec(key, d):
+    p = Path(str(d['path']))
+    return next((SEG_REF_FRAMES[k] for k in (key, p.name, p.stem) if k in SEG_REF_FRAMES), RT.get('seg_ref_default', 'first'))
+
+
 def video_scenes(key, d):
     """Các cảnh của video -> [(start_frame, ref_frame)] theo SEG_REF_FRAMES (khoá: key / tên file / stem) hoặc RT['seg_ref_default']."""
-    p = Path(str(d['path']))
-    spec = next((SEG_REF_FRAMES[k] for k in (key, p.name, p.stem) if k in SEG_REF_FRAMES), RT.get('seg_ref_default', 'first'))
+    spec = _seg_ref_spec(key, d)
     n = max(1, d['n'])
     from .source import is_stream
     if is_stream(d['path']):
         spec = 'first'                              # camera: không quét được cả video để tách cảnh; segment trên khung đầu
     if spec == 'auto':
+        color_thr = float(RT.get('scene_color_hist_thr', 0.35)) if RT.get('scene_color_cut', True) else 0.0
         scenes = detect_scenes(d['path'], RT['scene_cut_diff'], RT['scene_min_sec'], RT['scene_ref_offset_sec'], max_frames=n,
-                              step_sec=float(RT.get('scene_step_sec', 0) or 0))
+                               step_sec=float(RT.get('scene_step_sec', 0) or 0), color_hist_thr=color_thr)
     elif spec in (None, 'first'):
         scenes = [(0, 0)]
     elif isinstance(spec, (int, np.integer)):
@@ -405,7 +526,8 @@ def video_scenes(key, d):
 def cached_video_scenes(ckey, key, d):
     """video_scenes() có cache theo nội dung video: chạy lại cùng video không phải quét tách cảnh nữa."""
     tag = spec_tag(dict(cut=RT['scene_cut_diff'], step=RT.get('scene_step_sec'), mn=RT['scene_min_sec'], off=RT['scene_ref_offset_sec'],
-                        ref=RT.get('seg_ref_default'), n=d['n'], k=SEG_REF_FRAMES.get(key)))
+                        ref=RT.get('seg_ref_default'), n=d['n'], k=_seg_ref_spec(key, d),
+                        color_cut=RT.get('scene_color_cut', True), color_thr=RT.get('scene_color_hist_thr', 0.35)))
     f = settings.CACHE / f'{ckey}_scenes_{tag}.json'
     if RT['artifact_cache'] and f.exists():
         return [tuple(x) for x in json.loads(f.read_text())]
@@ -415,23 +537,44 @@ def cached_video_scenes(ckey, key, d):
     return scenes
 
 
-def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None):
-    """Segment hiện vật trên 1 frame (cache theo video + frame + segmenter) -> artifacts, masks (id đã cộng sid*SCENE_ID_STEP)."""
-    cache_dir = artifact_cache_dir(cache_key or key, seg.spec, ref_idx)
+def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None, frames=None, sample_idxs=None):
+    """Segment hiện vật trên 1 hoặc nhiều frame của 1 cảnh (cache theo video + frame + segmenter) -> artifacts, masks (id đã cộng sid*SCENE_ID_STEP)."""
+    if sample_idxs is not None:
+        s_idxs = [int(i) for i in sample_idxs]
+    elif frames:
+        s_idxs = sorted(int(i) for i in frames)
+    else:
+        s_idxs = [int(ref_idx)]
+    cache_dir = artifact_cache_dir(cache_key or key, seg.spec, ref_idx, sample_idxs=s_idxs)
     reg = cache_dir / 'artifacts.json'
     if RT['artifact_cache'] and reg.exists():
         registry, source = json.loads(reg.read_text()), 'cache'
     else:
-        # box người trên frame segment (chỉ detector, 1 frame) -> loại các 'hiện vật' thực chất là người
-        person_boxes = ([list(b[:4]) for b in M.detector.detect(frame) if b[4] >= RT['artifact_person_min_score']]
-                        if RT['artifact_person_filter'] else [])
-        arts, masks, person_like = seg.get().segment(mask_regions(frame), 0, person_boxes, {0: frame},
-                                                     {0: [dict(box=b) for b in person_boxes]})
-        cuda_check(f'segmentation {key} frame {ref_idx}')
+        sample_items = [(fi, frames[fi]) for fi in s_idxs] if frames else [(int(ref_idx), frame)]
+        per_frame, person_like, n_person_boxes = [], [], 0
+        for fidx, img in sample_items:
+            # box người trên frame segment (chỉ detector) -> loại các 'hiện vật' thực chất là người
+            person_boxes = ([list(b[:4]) for b in M.detector.detect(img) if b[4] >= RT['artifact_person_min_score']]
+                            if RT['artifact_person_filter'] else [])
+            n_person_boxes = max(n_person_boxes, len(person_boxes))
+            arts_f, masks_f, pl_f = seg.get().segment(mask_regions(img), 0, person_boxes, {0: img},
+                                                      {0: [dict(box=b) for b in person_boxes]})
+            cuda_check(f'segmentation {key} frame {fidx}')
+            per_frame.append((fidx, arts_f, masks_f))
+            for pl in pl_f:
+                person_like.append(dict(pl, frame_idx=fidx))
+        if len(per_frame) == 1:
+            arts, masks = per_frame[0][1], per_frame[0][2]
+        else:
+            arts, masks = merge_masks(
+                per_frame,
+                iou_thr=float(RT.get('seg_merge_iou', 0.5)),
+                min_votes=int(RT.get('seg_merge_min_votes', 2)),
+            )
         cache_dir.mkdir(parents=True, exist_ok=True)
         for aid, mk in masks.items():
             np.save(cache_dir / f'artifact_{aid}_mask.npy', mk.astype(np.uint8))
-        registry = dict(reference=dict(frame_idx=int(ref_idx), n_person_boxes=len(person_boxes)),
+        registry = dict(reference=dict(frame_idx=int(ref_idx), sample_frames=s_idxs, n_person_boxes=n_person_boxes),
                         artifacts=arts, person_like_removed=person_like)
         reg.write_text(json.dumps(registry, indent=2, ensure_ascii=False))
         source = 'computed'
@@ -453,23 +596,41 @@ def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None):
 
 
 def prepare_artifacts(key, d, M, seg):
-    """Bước chuẩn bị (ngoài pipeline song song): tách cảnh, segment hiện vật trên 1 frame mỗi cảnh.
+    """Bước chuẩn bị (ngoài pipeline song song): tách cảnh, segment hiện vật theo 1 hoặc nhiều frame mỗi cảnh.
     Cache hit -> không cần nạp segmenter."""
     res = ArtifactResult(key)
     t0 = time.perf_counter()
     try:
         ckey = f"v{video_fingerprint(d['path'])}"   # cache theo NỘI DUNG video: video khác trùng tên không dùng nhầm, upload lại không sinh bản mới
         scenes = cached_video_scenes(ckey, key, d)
-        frames = read_frames(d, [r for _, r in scenes])
+        from .source import is_stream
+        is_live = is_stream(d['path'])
+        spec = _seg_ref_spec(key, d)
+        explicit_ref = isinstance(spec, (int, np.integer, list, tuple))
+        scene_samples = []
+        for sid, (start, ref) in enumerate(scenes):
+            end = scenes[sid + 1][0] - 1 if sid + 1 < len(scenes) else max(d['n'] - 1, 0)
+            scene_samples.append(scene_sample_frames(start, ref, end, d['fps'], is_live=is_live, explicit_ref=explicit_ref))
+        need_idxs = {r for _, r in scenes}
+        for sid, (start, ref) in enumerate(scenes):
+            s_idxs = scene_samples[sid]
+            reg = artifact_cache_dir(ckey, seg.spec, ref, sample_idxs=s_idxs) / 'artifacts.json'
+            if not (RT['artifact_cache'] and reg.exists()):
+                need_idxs.update(s_idxs)
+        frames = read_frames(d, sorted(need_idxs))
         sources, reviews = [], []
         for sid, (start, ref) in enumerate(scenes):
-            arts, masks, src = segment_scene(key, M, seg, frames[ref], ref, sid, cache_key=ckey)
+            s_idxs = scene_samples[sid]
+            sc_frames = {fi: frames[fi] for fi in s_idxs if fi in frames}
+            arts, masks, src = segment_scene(key, M, seg, frames[ref], ref, sid, cache_key=ckey,
+                                             frames=sc_frames, sample_idxs=s_idxs)
             sources.append(src)
             res.scenes.append(dict(start=start, ref_idx=ref, artifacts=arts, masks=masks))
             res.artifacts += arts
             res.masks.update(masks)
             rv = draw_artifacts(frames[ref], arts, masks)
-            put_label(rv, f'scene {sid}: frame {start}+ | segment frame {ref} | {len(arts)} hien vat', (8, 24), (0, 0, 0), 0.6)
+            extra = f' ({len(s_idxs)}f)' if len(s_idxs) > 1 else ''
+            put_label(rv, f'scene {sid}: frame {start}+ | segment frame {ref}{extra} | {len(arts)} hien vat', (8, 24), (0, 0, 0), 0.6)
             reviews.append(rv)
         res.ref_idx = scenes[0][1]
         res.contours = {aid: mask_contours(mk) for aid, mk in res.masks.items()}

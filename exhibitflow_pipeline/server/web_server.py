@@ -60,6 +60,7 @@ from dashboard.runner import DemoRunner, PipelineRunner, State  # noqa: E402
 from exhibitflow import cam_worker  # noqa: E402
 from exhibitflow import multicam  # noqa: E402
 from exhibitflow import source as efsource  # noqa: E402
+from exhibitflow import tuning as _tuning  # noqa: E402
 
 ALLOWED = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 MAX_BYTES = int(os.environ.get('EXHIBITFLOW_MAX_MB', '600')) * 1024 * 1024
@@ -71,7 +72,7 @@ WEB_DIR = Path(os.environ.get('EXHIBITFLOW_WEB_DIR') or PROJ.parent / 'web')   #
 PIPE_MODES = ('tracking', 'tracking_seg', 'full')
 PIPE_OPTS = dict(pipeline_mode=lambda v: v if v in PIPE_MODES else 'full', tracker_process=bool, hand_process=bool, pose_process=bool, pose_gpu_preproc=bool, hand_batch=bool, drop_frames=bool, limit_cpu_threads=bool, alarm_show_sec=float,
                   tracker_threads=int, hand_threads=int, pose_threads=int, queue_size=int, pose_gate_norm_dist=float,
-                  multi_parallel=bool, multi_max_parallel=int)
+                  multi_parallel=bool, multi_max_parallel=int, tuning=_tuning.validate_tuning)
 NW = 960
 
 
@@ -269,6 +270,10 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def get_state():
         return state.snapshot()
 
+    @app.get('/api/tuning/schema')
+    def get_tuning_schema():
+        return _tuning.schema()
+
     def cpu_cores():
         """Số nhân mà tiến trình thực sự dùng được: min(affinity, hạn mức cgroup). Container Vast: os.cpu_count() thường báo cả máy chủ."""
         info = {'logical': os.cpu_count() or 1}
@@ -337,6 +342,10 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             opts = json.loads(options or '{}')
         except json.JSONDecodeError:
             opts = {}
+        try:
+            pipe_of(opts)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
         if runner.running():
             raise HTTPException(409, 'Pipeline đang chạy video khác, đợi xong hoặc bấm Dừng.')
         if runner.loading():
@@ -352,10 +361,13 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
     def start_job(vpath, name, opts, realtime):
         """Khởi chạy một lần pipeline cho một nguồn; dùng chung cho job đơn và job con của multi-camera."""
         # realtime: đọc đúng nhịp fps như camera, bỏ frame nếu không kịp; theo lô (Video): xử lý mọi frame
+        try:
+            pipe = pipe_of(opts)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
         if efsource.is_stream(vpath):             # camera: thời lượng tối đa (phút) + không giả lập realtime
             from exhibitflow import settings as efs
             efs.RT['stream_max_sec'] = max(10.0, float(opts.get('camera_max_min') or 30) * 60)
-        pipe = pipe_of(opts)
         state.save_settings(dict(pipe, realtime=realtime))
         try:
             runner.start(str(vpath))
@@ -382,6 +394,10 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             specs = json.loads(form.get('cameras') or '[]')
         except (json.JSONDecodeError, TypeError):
             raise HTTPException(400, 'Danh sách camera không hợp lệ')
+        try:
+            pipe_opts = pipe_of(opts)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
         if not isinstance(specs, list) or not (multicam.MIN_CAMS <= len(specs) <= multicam.MAX_CAMS):
             raise HTTPException(400, f'Cần từ {multicam.MIN_CAMS} đến {multicam.MAX_CAMS} camera')
         if runner.running():
@@ -424,7 +440,7 @@ def create_app(data_dir, demo=False, preload=True, mode=None, local=False):
             """Camera chạy trong tiến trình riêng (cam_worker): cấu hình = cài đặt hiện tại + tuỳ chọn của lần này."""
             realtime = efsource.is_stream(c['path'])
             cfg = dict(root=str(c['root']), video=str(c['path']), demo=demo, local=local,
-                       settings=dict(state.settings, **pipe_of(opts), realtime=realtime),
+                       settings=dict(state.settings, **pipe_opts, realtime=realtime),
                        extra=dict(models=dict(vlm=dict(port=cam_worker.free_port()))),   # llama-server riêng cho từng camera
                        flock=str(run_root / 'load.lock'),
                        stream_max_sec=max(10.0, float(opts.get('camera_max_min') or 30) * 60) if realtime else None)

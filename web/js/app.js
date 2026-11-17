@@ -178,8 +178,10 @@ const API={base:(()=>{try{return localStorage.getItem('ef_api')||''}catch{return
     const c=$('#beChip');c.classList.toggle('ok',this.ok);c.classList.toggle('bad',!this.ok);
     c.querySelector('span').textContent=this.ok?'Đã kết nối':'Mất kết nối';
     $('#beMsg').textContent=this.ok?'đã kết nối ✓':'không kết nối được';
+    if(this.ok&&!TSCHEMA)loadTuningSchema();
     pollSystem()},
   async system(){return (await this.f('/api/system')).json()},
+  async tuningSchema(){return (await this.f('/api/tuning/schema')).json()},
   async start(fd){return (await (await this.f('/api/jobs',{method:'POST',body:fd})).json()).job_id},
   async job(id){return (await this.f(`/api/jobs/${id}`)).json()},
   async result(id){return (await this.f(`/api/jobs/${id}/result`)).json()},
@@ -465,7 +467,7 @@ $('#runBtn').onclick=startAnalysis;
 $('#stopBtn').onclick=()=>{S.cancel=true;logLine('Đang dừng…')};
 
 /* ---------- Điều khiển giao diện ---------- */
-function setView(v){['dash','set'].forEach(k=>$('#v-'+k).hidden=k!==v);$$('#tabs .tab').forEach(b=>b.classList.toggle('on',b.dataset.view===v))}
+function setView(v){['dash','set'].forEach(k=>$('#v-'+k).hidden=k!==v);$$('#tabs .tab').forEach(b=>b.classList.toggle('on',b.dataset.view===v));if(v==='set'&&!TSCHEMA&&API.ok)loadTuningSchema()}
 $('#tabs').onclick=e=>{const b=e.target.closest('[data-view]');if(b)setView(b.dataset.view)};
 $('#beChip').onclick=()=>setView('set');
 $('#refreshBtn').onclick=()=>API.ping().then(loadCores);
@@ -492,10 +494,11 @@ $('#conf').oninput=e=>$('#confV').textContent=(+e.target.value).toFixed(2);
 
 /* ---------- Cấu hình pipeline (giống Settings của dashboard cũ; lưu trong trình duyệt, gửi kèm mỗi lần chạy) ---------- */
 const PIPE_DEF={multi_parallel:true,multi_max_parallel:2,camera_max_min:30,pipeline_mode:'full',tracker_process:true,hand_process:true,pose_process:true,pose_gpu_preproc:false,hand_batch:true,drop_frames:true,limit_cpu_threads:false,alarm_show_sec:4,
-  tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5};
+  tracker_threads:1,hand_threads:1,pose_threads:4,queue_size:8,pose_gate_norm_dist:1.5,tuning:{}};
 const PIPE=(()=>{try{return{...PIPE_DEF,...JSON.parse(localStorage.getItem('ef_pipe2')||'{}')}}catch{return{...PIPE_DEF}}})();
-const pipeOpts=()=>({...PIPE});
-Object.keys(PIPE_DEF).forEach(k=>{const el=$('#p-'+k);if(!el)return;
+if(!PIPE.tuning||typeof PIPE.tuning!=='object'||Array.isArray(PIPE.tuning))PIPE.tuning={};
+const pipeOpts=()=>({...PIPE,tuning:{...(PIPE.tuning||{})}});
+Object.keys(PIPE_DEF).forEach(k=>{if(k==='tuning')return;const el=$('#p-'+k);if(!el)return;
   if(el.tagName==='SELECT'){el.value=PIPE[k];if(el.value!==PIPE[k])el.value=PIPE_DEF[k];el.onchange=()=>{PIPE[k]=el.value;savePipe()}}
   else if(el.type==='checkbox'){el.checked=!!PIPE[k];el.onchange=()=>{PIPE[k]=el.checked;savePipe()}}
   else{el.value=PIPE[k];el.oninput=()=>{let v=parseFloat(el.value);
@@ -503,6 +506,73 @@ Object.keys(PIPE_DEF).forEach(k=>{const el=$('#p-'+k);if(!el)return;
     PIPE[k]=isNaN(v)?PIPE_DEF[k]:v;savePipe();checkThreads()}}});
 Object.keys(PIPE_DEF).forEach(k=>{if(k.endsWith('_process'))$('#p-'+k).addEventListener('change',checkThreads)});
 function savePipe(){try{localStorage.setItem('ef_pipe2',JSON.stringify(PIPE))}catch{}}
+
+/* ---------- Tham số tinh chỉnh động từ /api/tuning/schema ---------- */
+let TSCHEMA=null;
+function syncTuningInputs(){
+  if(!TSCHEMA)return;
+  const t=PIPE.tuning||{};
+  (TSCHEMA.params||[]).forEach(p=>{
+    const el=document.getElementById('t-'+p.key);if(!el)return;
+    el.classList.remove('err');
+    const has=Object.prototype.hasOwnProperty.call(t,p.key)&&t[p.key]!=null&&t[p.key]!=='';
+    if(p.type==='bool')el.checked=has?!!t[p.key]:!!p.default;
+    else el.value=has?t[p.key]:p.default;
+  });
+}
+function resetTuningGroup(gid){
+  if(!TSCHEMA)return;
+  (TSCHEMA.params||[]).filter(p=>!gid||p.group===gid).forEach(p=>{delete PIPE.tuning[p.key]});
+  savePipe();syncTuningInputs();
+}
+function renderTuningSchema(schema){
+  const box=$('#tuningGroups');if(!box)return;
+  if(!schema||!schema.groups){box.innerHTML='<p class="note">Không tải được danh sách tham số tinh chỉnh.</p>';return}
+  const byG={};(schema.params||[]).forEach(p=>{(byG[p.group]=byG[p.group]||[]).push(p)});
+  const byK=Object.fromEntries((schema.params||[]).map(p=>[p.key,p]));
+  box.innerHTML=(schema.groups||[]).map(g=>{
+    const ps=byG[g.id]||[];
+    const items=ps.map(p=>{
+      const defTxt=p.type==='bool'?(p.default?'Bật':'Tắt'):String(p.default);
+      const rb=p.needs_reload?'<span class="tbadge">Nạp lại model</span>':'';
+      if(p.type==='bool'){
+        return `<div class="titem"><div class="chk"><input type="checkbox" id="t-${esc(p.key)}" data-tkey="${esc(p.key)}"><label for="t-${esc(p.key)}">${esc(p.label_vi)} <span class="tdef">(mặc định: ${esc(defTxt)})</span> ${rb}</label></div><small>${esc(p.help_vi)}</small></div>`;
+      }
+      const attrs=[p.min!=null?`min="${p.min}"`:'',p.max!=null?`max="${p.max}"`:'',`step="${p.step!=null?p.step:(p.type==='int'?1:'any')}"`,`placeholder="${esc(defTxt)}"`].filter(Boolean).join(' ');
+      return `<div class="titem"><label for="t-${esc(p.key)}">${esc(p.label_vi)} <span class="tdef">(mặc định: ${esc(defTxt)})</span> ${rb}</label><input type="number" class="txt" id="t-${esc(p.key)}" data-tkey="${esc(p.key)}" ${attrs}><small>${esc(p.help_vi)}</small></div>`;
+    }).join('');
+    return `<div class="tgroup" data-tgroup="${esc(g.id)}">
+      <div class="tgroup-hd"><b>${esc(g.title)}</b>${g.needs_reload?'<span class="tbadge">Nạp lại model</span>':''}<span class="sp"></span>
+        <button class="btn sm" type="button" data-treset="${esc(g.id)}">Khôi phục mặc định</button></div>
+      <div class="tgroup-desc">${esc(g.description||'')}</div>
+      <div class="tgrid">${items}</div></div>`;
+  }).join('');
+  syncTuningInputs();
+  box.onclick=e=>{const b=e.target.closest('[data-treset]');if(b)resetTuningGroup(b.dataset.treset)};
+  box.oninput=e=>{
+    const el=e.target.closest('[data-tkey]');if(!el)return;
+    const p=byK[el.dataset.tkey];if(!p)return;
+    if(p.type==='bool'){
+      if(el.checked===!!p.default)delete PIPE.tuning[p.key];
+      else PIPE.tuning[p.key]=el.checked;
+      savePipe();return;
+    }
+    const raw=el.value.trim();
+    if(raw===''){el.classList.remove('err');delete PIPE.tuning[p.key];savePipe();return}
+    const v=Number(raw);
+    const bad=!Number.isFinite(v)||(p.type==='int'&&!Number.isInteger(v))||(p.min!=null&&v<p.min)||(p.max!=null&&v>p.max);
+    el.classList.toggle('err',bad);
+    if(bad)return;
+    if(v===Number(p.default))delete PIPE.tuning[p.key];
+    else PIPE.tuning[p.key]=v;
+    savePipe();
+  };
+}
+async function loadTuningSchema(){
+  try{TSCHEMA=await API.tuningSchema();renderTuningSchema(TSCHEMA)}
+  catch{const box=$('#tuningGroups');if(box&&!TSCHEMA)box.innerHTML='<p class="note">Kết nối server để tải danh sách tham số tinh chỉnh.</p>'}
+}
+if($('#tuningResetAll'))$('#tuningResetAll').onclick=()=>resetTuningGroup(null);
 /* Số nhân CPU khả dụng của server (đã trừ hạn mức container) để chỉnh số luồng cho hợp lý */
 const CORES={n:0,logical:0,quota:0};
 function checkThreads(){

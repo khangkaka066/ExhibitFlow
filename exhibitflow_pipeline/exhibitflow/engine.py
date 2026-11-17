@@ -4,6 +4,7 @@ import types
 from .common import *  # noqa: F401,F403
 from .interaction import (OnlineInteraction, WRIST_IDX, alarm_onset, decide, hand_anchor_point,  # noqa: F401
                           vlm_contact_indices)
+from .perception import PersonTrackFilter, cosine_similarity, extract_track_embedding, torso_hsv_histogram
 
 
 EOS = object()
@@ -54,16 +55,232 @@ class FrameStore:
 
 
 class AlarmBoard:
-    def __init__(self):
+    """Bảng theo dõi các track đang cảnh báo / đã bị gắn cờ ANOMALY."""
+
+    def __init__(self, persist=None):
         self.lock, self.alarms = threading.Lock(), []
+        self.flagged = {}
+        self.inherited_from = {}
+        self.flag_roots = {}
+        self.persist = persist
 
     def add(self, alarm):
         with self.lock:
             self.alarms.append(alarm)
+            tid = alarm['tid']
+            shown_from = int(alarm.get('shown_from', 0))
+            behavior = alarm.get('behavior')
+            prev = self.flagged.get(tid)
+            if prev is None:
+                self.flagged[tid] = dict(behavior=behavior, first_frame=shown_from)
+            else:
+                if behavior:
+                    prev['behavior'] = behavior
+                prev['first_frame'] = min(prev['first_frame'], shown_from)
+            self.flag_roots.setdefault(tid, tid)
 
-    def active(self, frame, hold_frames):
+    def inherit(self, new_tid, src_tid, frame):
+        """Kế thừa cờ ANOMALY từ src_tid sang new_tid tại frame (giữ nguyên self.alarms cho báo động gốc)."""
+        new_tid, src_tid, frame = int(new_tid), int(src_tid), int(frame)
         with self.lock:
-            return {a['tid']: a for a in self.alarms if a['shown_from'] <= frame <= a['shown_from'] + hold_frames}
+            src = self.flagged.get(src_tid)
+            if src is None or new_tid in self.flagged:
+                return False
+            self.flagged[new_tid] = dict(behavior=src.get('behavior'), first_frame=frame)
+            self.inherited_from[new_tid] = src_tid
+            self.flag_roots[new_tid] = self.flag_roots.get(src_tid, src_tid)
+            return True
+
+    def flagged_items(self):
+        """Bản sao an toàn luồng của các track đang mang cờ kèm root_tid."""
+        with self.lock:
+            return {
+                tid: dict(info, root_tid=self.flag_roots.get(tid, tid))
+                for tid, info in self.flagged.items()
+            }
+
+    def active(self, frame, hold_frames, persist=None):
+        use_persist = bool(RT.get('alarm_persist', True)) if (persist is None and self.persist is None) else (
+            bool(self.persist) if persist is None else bool(persist))
+        with self.lock:
+            if use_persist:
+                out = {a['tid']: a for a in self.alarms if a.get('shown_from', 0) <= frame}
+                for tid, info in self.flagged.items():
+                    if tid not in out and info.get('first_frame', 0) <= frame:
+                        out[tid] = dict(tid=tid, behavior=info.get('behavior'), shown_from=info.get('first_frame', 0))
+                return out
+            out = {a['tid']: a for a in self.alarms if a.get('shown_from', 0) <= frame <= a.get('shown_from', 0) + hold_frames}
+            for tid in self.inherited_from:
+                if tid not in out and tid in self.flagged:
+                    info = self.flagged[tid]
+                    ff = info.get('first_frame', 0)
+                    if ff <= frame <= ff + hold_frames:
+                        out[tid] = dict(tid=tid, behavior=info.get('behavior'), shown_from=ff)
+            return out
+
+
+def _box_center_h(box):
+    x1, y1, x2, y2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+    return 0.5 * (x1 + x2), 0.5 * (y1 + y2), max(y2 - y1, 1.0)
+
+
+def _ema_norm(prev, cur, alpha=0.7):
+    if cur is None:
+        return prev
+    arr = np.asarray(cur, dtype=np.float32).reshape(-1)
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        return prev
+    norm = float(np.linalg.norm(arr))
+    if norm <= 1e-6:
+        return prev
+    arr = arr / norm
+    if prev is None or prev.shape != arr.shape:
+        return arr
+    blended = alpha * prev + (1.0 - alpha) * arr
+    bn = float(np.linalg.norm(blended))
+    return (blended / bn) if bn > 1e-6 else arr
+
+
+class FlagInheritor:
+    """Kế thừa cờ ANOMALY qua đổi ID bằng OSNet ReID (nếu tracker lộ embedding) hoặc fallback HSV vùng thân + vị trí.
+
+    Ràng buộc: chỉ kế thừa khi track cũ đã mất <= max_gap_sec và mỗi cờ kế thừa tối đa 1 track tại một thời điểm.
+    """
+
+    def __init__(self, fps=25.0, cfg=None):
+        self.fps = max(float(fps or 25.0), 1e-3)
+        self._cfg_override = cfg
+        self._tracks = {}
+
+    def reset(self):
+        self._tracks.clear()
+
+    def _cfg(self):
+        base = dict(RT.get('flag_inherit') or {})
+        if self._cfg_override:
+            base.update(self._cfg_override)
+        return base
+
+    def _prune(self, frame_idx, keep_frames, flagged):
+        stale = [
+            tid for tid, st in self._tracks.items()
+            if (frame_idx - st['last_frame'] > keep_frames) and (tid not in flagged)
+        ]
+        for tid in stale:
+            self._tracks.pop(tid, None)
+
+    def step(self, frame_idx, tracks, work, board):
+        cfg = self._cfg()
+        if not cfg.get('enabled', True):
+            return {}
+        fidx = int(frame_idx)
+        tracks = tracks or []
+        current_tids = set()
+
+        for rec in tracks:
+            tid = int(rec['id'])
+            current_tids.add(tid)
+            box = [float(v) for v in rec['box']]
+            reid_raw = extract_track_embedding(rec)
+            # Fallback khi tracker không lộ embedding OSNet: histogram màu HSV vùng thân trên ảnh work
+            hsv_raw = torso_hsv_histogram(work, box) if work is not None else None
+            st = self._tracks.get(tid)
+            if st is None:
+                reid_vec = _ema_norm(None, reid_raw)
+                hsv_vec = _ema_norm(None, hsv_raw)
+                self._tracks[tid] = dict(
+                    first_frame=fidx,
+                    last_frame=fidx,
+                    first_box=box,
+                    box=box,
+                    first_reid_feat=reid_vec,
+                    reid_feat=reid_vec,
+                    first_hsv_feat=hsv_vec,
+                    hsv_feat=hsv_vec,
+                )
+            else:
+                st['last_frame'] = fidx
+                st['box'] = box
+                st['reid_feat'] = _ema_norm(st['reid_feat'], reid_raw)
+                st['hsv_feat'] = _ema_norm(st['hsv_feat'], hsv_raw)
+                if st['first_reid_feat'] is None and st['reid_feat'] is not None:
+                    st['first_reid_feat'] = st['reid_feat']
+                if st['first_hsv_feat'] is None and st['hsv_feat'] is not None:
+                    st['first_hsv_feat'] = st['hsv_feat']
+
+        flagged = board.flagged_items()
+        if not flagged or not current_tids:
+            return {}
+
+        max_gap_frames = max(0, int(round(float(cfg.get('max_gap_sec', 3.0)) * self.fps)))
+        max_dist = float(cfg.get('max_center_dist_norm', 2.0))
+        min_cos = float(cfg.get('reid_cos', 0.7))
+
+        # Mỗi cờ (root_tid) chỉ gắn tối đa 1 track hoạt động tại một thời điểm
+        active_roots = {info['root_tid'] for tid, info in flagged.items() if tid in current_tids}
+        donors_by_root = {}
+        for tid, info in flagged.items():
+            root = info['root_tid']
+            if root in active_roots or tid not in self._tracks:
+                continue
+            prev = donors_by_root.get(root)
+            if prev is None or self._tracks[tid]['last_frame'] > self._tracks[prev]['last_frame']:
+                donors_by_root[root] = tid
+
+        candidates = [tid for tid in current_tids if tid not in flagged and tid in self._tracks]
+        if not donors_by_root or not candidates:
+            self._prune(fidx, max(300, max_gap_frames * 2), flagged)
+            return {}
+
+        scored = []
+        for root, src_tid in donors_by_root.items():
+            src_st = self._tracks[src_tid]
+            src_last = src_st['last_frame']
+            gap_now = fidx - src_last
+            if gap_now < 1 or gap_now > max_gap_frames:
+                continue
+            acx, acy, ah = _box_center_h(src_st['box'])
+
+            for cand_tid in candidates:
+                cand_st = self._tracks[cand_tid]
+                # Chỉ kế thừa cho track mới xuất hiện SAU khi track cũ mất
+                appear_gap = cand_st['first_frame'] - src_last
+                if appear_gap < 1 or appear_gap > max_gap_frames:
+                    continue
+                bcx, bcy, bh = _box_center_h(cand_st['first_box'])
+                dist_norm = math.hypot(bcx - acx, bcy - acy) / max(0.5 * (ah + bh), 1.0)
+                if dist_norm > max_dist:
+                    continue
+
+                cand_reid = cand_st['first_reid_feat'] if cand_st['first_reid_feat'] is not None else cand_st['reid_feat']
+                cand_hsv = cand_st['first_hsv_feat'] if cand_st['first_hsv_feat'] is not None else cand_st['hsv_feat']
+                if src_st['reid_feat'] is not None and cand_reid is not None and src_st['reid_feat'].shape == cand_reid.shape:
+                    sim = cosine_similarity(src_st['reid_feat'], cand_reid)
+                    method = 'reid'
+                elif src_st['hsv_feat'] is not None and cand_hsv is not None:
+                    sim = cosine_similarity(src_st['hsv_feat'], cand_hsv)
+                    method = 'hsv_fallback'
+                else:
+                    continue
+
+                if sim >= min_cos:
+                    scored.append((sim, -dist_norm, root, src_tid, cand_tid, method, dist_norm, gap_now))
+
+        scored.sort(reverse=True)
+        used_roots, used_cands, inherited = set(), set(), {}
+        for sim, _, root, src_tid, cand_tid, method, dist_norm, gap_now in scored:
+            if root in used_roots or cand_tid in used_cands:
+                continue
+            if board.inherit(cand_tid, src_tid, frame=fidx):
+                used_roots.add(root)
+                used_cands.add(cand_tid)
+                inherited[cand_tid] = dict(
+                    src_tid=src_tid, root_tid=root, method=method,
+                    sim=round(sim, 4), dist_norm=round(dist_norm, 4), gap_frames=gap_now,
+                )
+
+        self._prune(fidx, max(300, max_gap_frames * 2), flagged)
+        return inherited
 
 
 class GpuMonitor(threading.Thread):
@@ -148,7 +365,8 @@ class VideoRun:
         cap = self.n + 1 if mode == 'sequential' else rt['ring_seconds'] * self.fps
         self.store = FrameStore(cap, (d['NW'], d['NH']), rt['store_long'])
         self.Sst = self.store.size[0] / d['W']
-        self.rec, self.board = LatencyRecorder(), AlarmBoard()
+        self.rec, self.board = LatencyRecorder(), AlarmBoard(persist=rt.get('alarm_persist', True))
+        self.flagged = self.board.flagged
         self.stop, self.errors = threading.Event(), []
         self.tracks, self.t_cap, self.frame_log = {}, {}, []
         self.dropped = []
@@ -156,6 +374,8 @@ class VideoRun:
         self.vlm_hold = threading.Event()   # đang dừng luồng video để đợi VLM (vlm_sync): reader không đọc frame mới
         self.pauses, self.last_pkt, self.last_alarm_n = [], None, 0
         self.art = art                      # mask hiện vật đã tính ở bước chuẩn bị (prepare_artifacts)
+        self.person_filter = PersonTrackFilter(cfg=rt.get('person_filter'), work_width=d['W'])
+        self.flag_inheritor = FlagInheritor(fps=self.fps, cfg=rt.get('flag_inherit'))
         self.inter = OnlineInteraction(self)
         if art.error:
             print(f'  {key}: không có hiện vật (segmentation lỗi) -> không có event chạm')
@@ -170,7 +390,14 @@ class VideoRun:
             self.scenes.append(dict(sc, union=union, dist=dist))
         self.scene_starts = [sc['start'] for sc in self.scenes]
         self.cur_scene = 0
-        self.inter.set_artifacts(self.scenes[0]['artifacts'], self.scenes[0]['masks'])
+        sc0 = self.scenes[0]
+        self.inter.set_artifacts(
+            sc0['artifacts'],
+            sc0['masks'],
+            ref_idx=sc0.get('ref_idx', sc0.get('start', 0)),
+            scene_start=sc0.get('start', 0),
+            ref_frame=sc0.get('ref_frame'),
+        )
         self.sink_times = deque(maxlen=30)
         self.writer = None
 
@@ -226,7 +453,8 @@ def _stage_fns(ctx):
         p.dets = [[b[0] / S, b[1] / S, b[2] / S, b[3] / S, b[4]] for b in M.detector.detect(p.native)]
 
     def track(p):
-        p.tracks = M.tracker.update(p.dets, p.work, native=p.native, S=S)
+        tracks = M.tracker.update(p.dets, p.work, native=p.native, S=S)
+        p.tracks = ctx.person_filter.filter_pre_pose(tracks, frame_idx=p.idx)
 
     gate = ctx.rt.get('pose_gate_norm_dist')
 
@@ -246,6 +474,7 @@ def _stage_fns(ctx):
         p.n_pose = len(recs)
         if recs:
             M.pose(p.native, recs, ctx.S)
+        p.tracks = ctx.person_filter.filter_post_pose(p.tracks, posed_ids=[r['id'] for r in recs], frame_idx=p.idx)
 
     def hand(p):
         M.hand(p.native, p.tracks, ctx.S)
@@ -255,10 +484,18 @@ def _stage_fns(ctx):
         k = ctx.scene_index(p.idx)
         if k != ctx.cur_scene:                # sang cảnh mới -> state machine dùng mask hiện vật của cảnh đó
             ctx.cur_scene = k
-            ctx.inter.set_artifacts(ctx.scenes[k]['artifacts'], ctx.scenes[k]['masks'])
+            sc = ctx.scenes[k]
+            ctx.inter.set_artifacts(
+                sc['artifacts'],
+                sc['masks'],
+                ref_idx=sc.get('ref_idx', sc.get('start', 0)),
+                scene_start=sc.get('start', 0),
+                ref_frame=sc.get('ref_frame'),
+            )
         ctx.tracks[p.idx] = p.tracks
         ctx.last_frame = max(ctx.last_frame, p.idx)
-        p.states = ctx.inter.step(p.idx, p.tracks)
+        ctx.flag_inheritor.step(p.idx, p.tracks, p.work, ctx.board)
+        p.states = ctx.inter.step(p.idx, p.tracks, work=p.work)
 
     def interact_flush():
         ctx.inter.flush(ctx.last_frame)
@@ -336,7 +573,7 @@ def render_live(ctx, p, e2e_ms):
     union = ctx.scene_at(p.idx)['union']
     if union.any():
         vis[union] = (vis[union] * 0.7 + np.array(IDLE_ARTIFACT) * 0.3).astype(np.uint8)
-    alarms = ctx.board.active(p.idx, int(ctx.rt['alarm_show_sec'] * ctx.fps))
+    alarms = ctx.board.active(p.idx, int(ctx.rt['alarm_show_sec'] * ctx.fps), persist=ctx.rt.get('alarm_persist', True))
     ctx.last_alarm_n = len(ctx.board.alarms)
     contact = {s['track_id'] for s in (p.states or []) if s['state'] == 'CONTACT_LIKE'}
     for rec in p.tracks or []:
@@ -344,7 +581,8 @@ def render_live(ctx, p, e2e_ms):
         col = ALARM_COLOR if tid in alarms else CONTACT_COLOR if tid in contact else IDLE_PERSON
         x1, y1, x2, y2 = map(int, rec['box'])
         cv2.rectangle(vis, (x1, y1), (x2, y2), col, 3 if tid in alarms else 2)
-        txt = f'ID {tid}' + (f" | {str(alarms[tid]['behavior']).upper()}" if tid in alarms else '')
+        beh = alarms[tid].get('behavior') if tid in alarms else None
+        txt = f'ID {tid}' + (f' | {str(beh).upper()}' if beh else '')
         put_label(vis, txt, (x1, y1 - 4), (0, 0, 0), 0.5, fg=col)
         if rec.get('kp') is not None:
             for hand in WRIST_IDX:
@@ -365,7 +603,7 @@ def render_live(ctx, p, e2e_ms):
     vis = vis.copy()                           # dòng thông số chỉ ghi vào video lưu ra file, không vẽ lên frame của dashboard
     lines = [f"frame {p.idx}  t={p.idx / ctx.fps:.2f}s  [{ctx.mode}{' realtime' if ctx.rt['realtime'] else ''}]",
              f'pipeline {live_fps:.1f} FPS | e2e {e2e_ms:.0f} ms | dropped {len(ctx.dropped)}',
-             f'VLM queue {ctx.vlm.pending()} | alarms {len(ctx.board.alarms)}']
+             f'VLM queue {ctx.vlm.pending()} | alarms {len(ctx.board.alarms)} | flagged {len(ctx.board.flagged)}']
     for k, text in enumerate(lines):
         put_label(vis, text, (8, 22 + 22 * k), (0, 0, 0), 0.55, fg=(0, 255, 255))
     if ctx.writer is None:
