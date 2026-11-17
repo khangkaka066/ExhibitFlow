@@ -50,7 +50,15 @@ def effective_contact_thr(is_pedestal=False):
 
 def _periodic_vlm_cfg():
     """Đọc cấu hình RT['periodic_vlm'] (hỗ trợ dict hoặc bool)."""
-    cfg = dict(enabled=False, min_near_sec=3.0, cooldown_sec=3.0, max_near_gap_frames=5)
+    cfg = dict(
+        enabled=False,
+        min_near_sec=1.0,
+        cooldown_sec=3.0,
+        max_near_gap_frames=5,
+        flush_on_end=True,
+        flush_min_sec=1.0,
+        flush_max_per_track=2,
+    )
     raw = RT.get('periodic_vlm')
     if isinstance(raw, dict):
         cfg.update(raw)
@@ -254,7 +262,7 @@ def plan_crop(g, ctx):
     return b, EXPORT['crop_out_long'] / max(b[2] - b[0], b[3] - b[1], 1)
 
 
-def render_crop(img_store, fi, g, ctx, marked=True):
+def render_crop(img_store, fi, g, ctx, marked=True, before=False):
     x1, y1, x2, y2 = g['crop']
     sc = g['scale']
     img = cv2.resize(img_store[y1:y2, x1:x2], (max(1, int((x2 - x1) * sc)), max(1, int((y2 - y1) * sc))),
@@ -272,6 +280,9 @@ def render_crop(img_store, fi, g, ctx, marked=True):
         a = ctx.artifact_by_id[aid]
         p = T([[a['box'][0], a['box'][3]]])[0]
         put_label(img, f'EXHIBIT {aid}', (p[0], p[1] + 6 + int(22 * fs)), (200, 70, 0), fs)
+    if before:
+        put_label(img, 'BEFORE', (6, int(28 * fs) + 6), (40, 40, 40), fs)
+        return img
     r = next((r for r in ctx.tracks.get(fi, []) if r['id'] == g['tid']), None)
     if r is not None:
         b = T([r['box'][:2], r['box'][2:]]).astype(int)
@@ -281,6 +292,25 @@ def render_crop(img_store, fi, g, ctx, marked=True):
         put_label(img, f"ID {g['tid']} (lost)", (8, img.shape[0] - 8), (0, 0, 200), fs)
     put_label(img, f"t={(fi - g['window'][0]) / ctx.fps:+.2f}s", (6, int(28 * fs) + 6), (40, 40, 40), fs)
     return img
+
+
+def _scene_ref_frame(ctx, frame_idx):
+    if hasattr(ctx, 'get_ref_frame'):
+        return ctx.get_ref_frame(frame_idx)
+    if hasattr(ctx, 'scene_at'):
+        sc = ctx.scene_at(frame_idx)
+        ref_idx = int(sc.get('ref_idx', sc.get('start', 0)))
+        img = getattr(ctx, 'ref_frames', {}).get(ref_idx)
+        if img is None and hasattr(ctx, 'store'):
+            img = ctx.store.get(ref_idx)
+        if img is None:
+            img = sc.get('ref_frame')
+        if img is not None and hasattr(ctx, 'store'):
+            sw, sh = ctx.store.size
+            if img.shape[1] != sw or img.shape[0] != sh:
+                img = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
+        return ref_idx, img
+    return None, None
 
 
 def export_task(ctx, g):
@@ -295,13 +325,29 @@ def export_task(ctx, g):
     (gdir / 'marked').mkdir(parents=True, exist_ok=True)
     (gdir / 'clean').mkdir(exist_ok=True)
     tiles, images, times, used = [], [], [], []
+    has_before, ref_idx = False, None
+    if EXPORT.get('before_ref', True):
+        ref_idx, ref_img = _scene_ref_frame(ctx, g['start'])
+        if ref_img is not None:
+            ref_img = mask_regions(ref_img)
+            b_marked = render_crop(ref_img, ref_idx, g, ctx, marked=True, before=True)
+            b_clean = render_crop(ref_img, ref_idx, g, ctx, marked=False, before=True)
+            pb_m = gdir / 'marked' / f'00_before_f{ref_idx:05d}.jpg'
+            pb_c = gdir / 'clean' / f'00_before_f{ref_idx:05d}.jpg'
+            cv2.imwrite(str(pb_m), b_marked, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            cv2.imwrite(str(pb_c), b_clean, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            tiles.append(b_marked)
+            images.append(str(pb_m if settings.VLM_IMAGE_SET == 'marked' else pb_c))
+            times.append(None)
+            has_before = True
+    off = 1 if has_before else 0
     for k, fi in enumerate(g['samples']):
         img = ctx.store.get(fi)
         if img is None:
             continue
         img = mask_regions(img)
         marked = render_crop(img, fi, g, ctx)
-        p_m, p_c = gdir / 'marked' / f'{k:02d}_f{fi:05d}.jpg', gdir / 'clean' / f'{k:02d}_f{fi:05d}.jpg'
+        p_m, p_c = gdir / 'marked' / f'{k + off:02d}_f{fi:05d}.jpg', gdir / 'clean' / f'{k + off:02d}_f{fi:05d}.jpg'
         cv2.imwrite(str(p_m), marked, [cv2.IMWRITE_JPEG_QUALITY, 92])
         cv2.imwrite(str(p_c), render_crop(img, fi, g, ctx, False), [cv2.IMWRITE_JPEG_QUALITY, 92])
         tiles.append(marked)
@@ -309,16 +355,20 @@ def export_task(ctx, g):
         times.append(round((fi - ws) / ctx.fps, 3))
         used.append(fi)
     g['samples'] = used
+    g['has_before'] = has_before
+    g['before_frame'] = ref_idx if has_before else None
     sheet = contact_sheet(tiles)
     if sheet is not None:
         cv2.imwrite(str(gdir / 'sheet.jpg'), sheet)
     dt = (used[1] - used[0]) / ctx.fps if len(used) > 1 else 0.0
-    prompt = settings.PROMPT_TEMPLATE.format(n=len(used), dt=dt, tid=g['tid'])
+    before_note = getattr(settings, 'BEFORE_NOTE', '') if has_before else ''
+    prompt = settings.PROMPT_TEMPLATE.format(n=len(images), dt=dt, tid=g['tid'], before_note=before_note)
     (gdir / 'prompt.txt').write_text(prompt, encoding='utf-8')
     g['dir'] = gdir
     g['task_id'] = f"{ctx.exp}/{ctx.key}/{g['name']}"
     g['export_ms'] = round((time.perf_counter() - t0) * 1e3, 2)
     return dict(task_id=g['task_id'], video_key=ctx.key, segment=g['name'], tid=g['tid'], images=images, times=times,
+                has_before=has_before, before_frame=ref_idx if has_before else None,
                 prompt=prompt, system=settings.SYSTEM_PROMPT, t_emit=time.perf_counter())
 
 
@@ -821,10 +871,12 @@ class OnlineInteraction:
         self.gate_rejects = Counter()                  # (track_id, reason) -> count
         self.scene_gate_rejects = defaultdict(Counter) # scene_id -> Counter(reason -> count)
         self._rejects_scene_track = Counter()          # (scene_id, track_id, reason) -> count
+        self.ambiguous_resolved = 0
         self.track_stats = {}                          # track_id -> stats dict
         self.pose_smoother = PoseSmoother()
         self._near_streaks = {}
         self._frame_near_cands = {}
+        self._flush_counts = Counter()
         self.missing_detector = MissingArtifactDetector(fps=self.fps)
 
     def _scene_id(self, frame_idx=None):
@@ -886,7 +938,8 @@ class OnlineInteraction:
                 d0, aid0 = cands[0]
                 if d0 <= CFG['state_near_thr']:
                     saw_near = True
-                ambiguous = len(cands) > 1 and (cands[1][0] - d0) < 0.15
+                ambiguous_thr = float(CFG.get('ambiguous_diff_thr', 0.15))
+                ambiguous = len(cands) > 1 and (cands[1][0] - d0) < ambiguous_thr
                 ps = self.pair_states.setdefault((rec['id'], aid0, hand), PairState())
                 is_ped = aid0 in self.pedestal_ids
                 contact_thr = effective_contact_thr(is_pedestal=is_ped)
@@ -896,8 +949,11 @@ class OnlineInteraction:
                     state = gate.upper()
                     self._reject(i, tid, gate)
                 elif ambiguous and state in ('NEAR', 'CONTACT_LIKE'):
-                    state = 'AMBIGUOUS'
-                    self._reject(i, tid, 'ambiguous')
+                    if str(CFG.get('ambiguous_policy', 'nearest')).lower() == 'reject':
+                        state = 'AMBIGUOUS'
+                        self._reject(i, tid, 'ambiguous')
+                    else:
+                        self.ambiguous_resolved += 1
                 if state == 'CONTACT_LIKE':
                     saw_contact = True
                 if (state not in ('FAR', 'OCCLUDED', 'TOO_SMALL', 'DEPTH_MISMATCH', 'SELF_TOUCH', 'ARM_AT_REST')
@@ -973,18 +1029,70 @@ class OnlineInteraction:
             g['window'] = [ws, i]
             self.pending.append(g)
 
+    def _flush_near_streak(self, tid, st, pcfg):
+        """Gửi 1 đoạn VLM cuối cho chuỗi NEAR khi track mất > max_gap hoặc hết video."""
+        if not pcfg.get('enabled', False) or not pcfg.get('flush_on_end', True):
+            return False
+        if not st.get('active', False) or st.get('start_frame') is None:
+            return False
+        fps = max(float(self.fps or 25.0), 1e-3)
+        flush_min_frames = max(1, math.ceil(float(pcfg.get('flush_min_sec', 1.0)) * fps))
+        if st.get('near_count', 0) < flush_min_frames:
+            return False
+        max_flushes = max(0, int(pcfg.get('flush_max_per_track', 2)))
+        if self._flush_counts[tid] >= max_flushes:
+            return False
+        if self._has_contact_event_for_track(tid, st['start_frame'], st['last_frame']):
+            return False
+        if len(self.tasks) + len(self.pending) >= int(CFG['max_tasks_per_video']):
+            return False
+
+        e = dict(
+            eid=len(self.events),
+            track_id=tid,
+            artifact_id=st['aid'],
+            hand='+'.join(sorted(st['hands'])),
+            start_frame=st['start_frame'],
+            end_frame=st['last_frame'],
+            contact_frames=[st['peak']],
+            min_norm_dist=round(float(st['min_norm_dist']), 4),
+            peak=st['peak'],
+            periodic=True,
+            flush=True,
+            group=None,
+        )
+        self.events.append(e)
+        g = self._new_group(e)
+        g['artifact_ids'] = sorted(st['aids'])
+        g['periodic'] = True
+        g['flush'] = True
+        self._set_window(g)
+        self.pending.append(g)
+
+        self._flush_counts[tid] += 1
+        st['active'] = False
+        st['last_emit'] = st['last_frame']
+        st['start_frame'] = None
+        st['near_count'] = 0
+        st['min_norm_dist'] = 9.9
+        st['aids'] = set()
+        st['hands'] = set()
+        return True
+
     def _update_periodic_vlm(self, i):
         """Đường dự phòng: người ở trong vùng NEAR liên tục >= min_near_sec mà chưa có event -> gửi VLM."""
         pcfg = _periodic_vlm_cfg()
         if not pcfg.get('enabled', False):
             return
         fps = max(float(self.fps or 25.0), 1e-3)
-        min_frames = max(1, math.ceil(float(pcfg.get('min_near_sec', 3.0)) * fps))
+        min_frames = max(1, math.ceil(float(pcfg.get('min_near_sec', 1.0)) * fps))
         cooldown_frames = max(1, math.ceil(float(pcfg.get('cooldown_sec', 3.0)) * fps))
         max_gap = max(0, int(pcfg.get('max_near_gap_frames', 5)))
 
-        for tid, st in self._near_streaks.items():
+        for tid, st in list(self._near_streaks.items()):
             if tid not in self._frame_near_cands and i - st['last_frame'] > max_gap:
+                if st.get('active', False):
+                    self._flush_near_streak(tid, st, pcfg)
                 st['active'] = False
 
         for tid, cands in self._frame_near_cands.items():
@@ -1145,8 +1253,15 @@ class OnlineInteraction:
         self.ctx.vlm.submit(task, self.ctx.on_vlm_result)
 
     def flush(self, last_idx):
+        if last_idx is None or last_idx < 0:
+            return
         for pair in list(self.open_ev):
             self._close(self.open_ev.pop(pair))
+        pcfg = _periodic_vlm_cfg()
+        if pcfg.get('enabled', False) and pcfg.get('flush_on_end', True):
+            for tid, st in sorted(self._near_streaks.items()):
+                if st.get('active', False):
+                    self._flush_near_streak(tid, st, pcfg)
         self._emit_ready(last_idx, final=True)
 
     def diagnostics(self):
@@ -1176,6 +1291,7 @@ class OnlineInteraction:
             gate_rejects_by_scene=by_scene,
             gate_rejects_total=dict(sorted((r, int(c)) for r, c in totals.items())),
             tracks=tracks,
+            ambiguous_resolved=int(self.ambiguous_resolved),
         )
 
     def diagnostic_rows(self):

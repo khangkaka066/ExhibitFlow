@@ -213,6 +213,77 @@
 - **Verification Command:** `cd exhibitflow_pipeline && PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES="" nice -n 19 /tmp/venv_TASK-011/bin/python -m pytest tests/test_pipeline_cpu.py -k "tuning" -v`
 - **Trạng thái:** VERIFIED (4 passed -k tuning; 42 passed toàn bộ)
 
+## Vòng 2 — sau khi chạy lại 12 video (results (1)): mask rơi mạnh, nhãn stealing sai
+Số liệu: recall video 50% (không đổi), FP 2, mask: v1 19→6, v2 15→2, v3 17→5, v8 19→5, v10 46→13, v9 31→20. `merge_masks` (segmenter.py) chỉ giữ cụm mask có >= `seg_merge_min_votes`=2 frame, mà mỗi cảnh chỉ lấy 3-4 frame và GDINO không ổn định giữa các frame -> mất phần lớn mask so với bản 1 frame. Video 1/2 mất alert đúng vì mask hiện vật chạm biến mất. Ngoài ra `periodic_vlm.min_near_sec=3.0` lớn hơn thời gian ở gần của video 12 (33 frame ~1.4s) nên không bao giờ kích hoạt; 20 lần `ambiguous` ở v12 và 77 lần ở v6 bị loại; nhãn `stealing` sai vì VLM chỉ thấy cửa sổ quanh lúc chạm (post_sec=1s), không có ảnh "trước" để so hiện vật có biến mất không.
+
+### [x] VERIFIED TASK-012: Sửa gộp mask nhiều frame — không bao giờ ít hơn bản 1 frame
+- **Task ID:** TASK-012
+- **Mục tiêu:** Mask sau gộp phải là TẬP HỢP (union) mọi mask của các frame mẫu, tối thiểu bằng bản 1 frame cũ (v1 phải trở lại ~19 mask, v2 ~15, v10 ~46 thay vì 6/2/13).
+- **Các file liên quan:**
+  - `exhibitflow_pipeline/exhibitflow/segmenter.py` (`merge_masks`, nơi gọi ở ~dòng 331 và 571)
+  - `exhibitflow_pipeline/exhibitflow/settings.py` (`RT['seg_merge_min_votes']`, `seg_multi_frame`)
+  - `exhibitflow_pipeline/exhibitflow/tuning.py` (mô tả/khoảng của tham số mới)
+  - `exhibitflow_pipeline/tests/test_pipeline_cpu.py`
+- **Lưu ý kiến trúc & Trade-offs:**
+  - Đổi `seg_merge_min_votes` mặc định 2→1 và BỎ điều kiện `cl is clusters[0]` (chỉ giữ 1 cụm đơn lẻ). Thêm `RT['seg_merge_keep_ref']=True`: mọi mask của frame tham chiếu (frame đầu cảnh) luôn được giữ nguyên (đảm bảo superset của hành vi cũ), các frame khác chỉ BỔ SUNG mask mới (IoU < `seg_merge_iou` với mọi mask đã có).
+  - Mask nhiễu chỉ có 1 phiếu: gắn `votes` vào artifact và cho phép lọc tuỳ chọn `RT['seg_merge_min_votes_extra']` (mặc định 1) cho mask không thuộc frame tham chiếu; không lọc mask của frame tham chiếu.
+  - Đổi định dạng cache (tăng cache key) để mask cũ 'seg_multi_frame' không bị dùng lại.
+  - Mask bị người che ở frame tham chiếu nhưng thấy rõ ở frame khác: lấy từ frame khác (đó là mục đích của đa frame).
+  - Test tổng hợp: 3 frame với tập mask khác nhau [A,B,C], [A,D], [B,E] -> kết quả đủ {A,B,C,D,E}; mask frame tham chiếu không bao giờ bị mất; mask trùng IoU>=0.5 chỉ giữ 1.
+  - Không động vào `external/`. Không chạy GDINO/SAM thật.
+  - **Dependencies:** [TEMP] `pytest`.
+- **Verification Command:** `cd exhibitflow_pipeline && PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES="" nice -n 19 /tmp/venv_TASK-012/bin/python -m pytest tests/test_pipeline_cpu.py -k "merge_masks or seg_union" -v`
+- **Trạng thái:** VERIFIED (2 passed)
+
+### [x] VERIFIED TASK-013: Bắt chạm khi mask nhập nhằng / không có mask (video 12, 6)
+- **Task ID:** TASK-013
+- **Mục tiêu:** Không bỏ sót khi người ở gần vùng có nhiều mask (`ambiguous`) hoặc lấy vật không có mask: nhả cổng nhập nhằng có kiểm soát và gửi VLM khi track kết thúc nếu đã ở gần đủ lâu.
+- **Các file liên quan:**
+  - `exhibitflow_pipeline/exhibitflow/interaction.py` (`frame_states` ~dòng 889-900, `_update_periodic_vlm`, `_close`, flush cuối video)
+  - `exhibitflow_pipeline/exhibitflow/engine.py` (gọi flush khi hết video / track mất)
+  - `exhibitflow_pipeline/exhibitflow/settings.py`, `exhibitflow_pipeline/exhibitflow/tuning.py`
+  - `exhibitflow_pipeline/tests/test_pipeline_cpu.py`
+- **Lưu ý kiến trúc & Trade-offs:**
+  - `ambiguous` (2 mask gần nhau, chênh khoảng cách < 0.15): thêm `CFG['ambiguous_policy']='nearest'` (mặc định) -> chọn mask gần nhất thay vì loại; `'reject'` = hành vi cũ. Ghi `diagnostics.ambiguous_resolved`.
+  - `periodic_vlm.min_near_sec` 3.0→1.0 (video ngắn). Thêm `periodic_vlm.flush_on_end=True`: khi track mất > `max_gap` hoặc video kết thúc mà track đã NEAR liên tục >= `flush_min_sec` (1.0) chưa có event/VLM -> gửi 1 đoạn VLM cuối (cửa sổ = lúc NEAR + post_sec). Đảm bảo `max_tasks_per_video` vẫn được tôn trọng, mỗi track tối đa 2 lần flush.
+  - Trade-off: tăng số lần gọi VLM (mỗi ~0.5-4s/đoạn); VLM là bộ lọc cuối nên FP chấp nhận được.
+  - Test tổng hợp: (1) 2 mask cách 0.1 -> chọn mask gần hơn, tạo event; policy 'reject' -> không event; (2) track NEAR 1.5s không event, hết video -> đúng 1 task flush; (3) track NEAR 0.5s -> không flush.
+  - **Dependencies:** [TEMP] `pytest`.
+- **Verification Command:** `cd exhibitflow_pipeline && PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES="" nice -n 19 /tmp/venv_TASK-013/bin/python -m pytest tests/test_pipeline_cpu.py -k "ambiguous or flush" -v`
+- **Trạng thái:** VERIFIED (3 passed)
+
+### [x] VERIFIED TASK-014: VLM có ảnh "trước" + cửa sổ sau dài hơn để phân biệt stealing / touching
+- **Task ID:** TASK-014
+- **Mục tiêu:** Video 6, 8 (GT stealing) bị gán 'touching' vì VLM không biết hiện vật có biến mất không. Thêm ảnh tham chiếu "BEFORE" (cùng vùng crop từ frame tham chiếu của cảnh) và kéo dài cửa sổ sau khi chạm; thêm tổng hợp nhãn theo track.
+- **Các file liên quan:**
+  - `exhibitflow_pipeline/exhibitflow/interaction.py` (`export_group`/`plan_crop`/`render_crop`, `_set_window`)
+  - `exhibitflow_pipeline/exhibitflow/vlm.py` (số ảnh, prompt)
+  - `exhibitflow_pipeline/exhibitflow/settings.py` (`EXPORT`, `PROMPT_TEMPLATE`, `PROMPT_FIELDS`)
+  - `exhibitflow_pipeline/exhibitflow/engine.py`, `exhibitflow_pipeline/exhibitflow/pipeline.py` (`track_summary` trong result.json)
+  - `exhibitflow_pipeline/tests/test_pipeline_cpu.py`
+- **Lưu ý kiến trúc & Trade-offs:**
+  - `EXPORT['post_sec']` 1.0→3.0, `max_window_sec` 8→10. Thêm `EXPORT['before_ref']=True`: ảnh đầu tiên gửi VLM là crop của frame tham chiếu cảnh (hiện vật còn nguyên) với nhãn 'BEFORE'; các ảnh sau là chuỗi frame như cũ. Tổng ảnh = `n_images`+1 (ctx 16384 đủ; kiểm tra `max_pixels`).
+  - Prompt (thêm biến mới vào `PROMPT_FIELDS`, escape `{{ }}` đúng): "Image 1 is a reference taken BEFORE (exhibit intact). If the exhibit visible in Image 1 is missing, moved or carried away in the later frames, answer stealing."; giữ JSON chỉ trả label + confidence. Prompt tuỳ chỉnh của người dùng trong Settings vẫn dùng được (nếu thiếu biến mới thì không chèn).
+  - Tổng hợp theo track: `result.json['track_summary'] = {tid: {behavior: nhãn nặng nhất trong các task, n_tasks}}` với thứ tự stealing > holding > touching > normal; dashboard/web có thể hiển thị sau. Không đổi nhãn của từng event.
+  - Trade-off: thêm 1 ảnh/đoạn (+~12% thời gian VLM). Nếu frame tham chiếu có người che hiện vật, VLM có thể bối rối -> dùng frame tham chiếu đã chọn của `scene` (không phải frame bất kỳ).
+  - Test tổng hợp (dry_run VLM, không gọi model): số ảnh = n+1, ảnh đầu là 'before', prompt có chỗ giải thích BEFORE, cửa sổ sau dài ra đúng `post_sec`, `track_summary` lấy nhãn nặng nhất.
+  - **Dependencies:** [TEMP] `pytest`.
+- **Verification Command:** `cd exhibitflow_pipeline && PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES="" nice -n 19 /tmp/venv_TASK-014/bin/python -m pytest tests/test_pipeline_cpu.py -k "before_ref or track_summary" -v`
+- **Trạng thái:** VERIFIED (3 passed)
+
+### [x] VERIFIED TASK-015: Công cụ so sánh 2 lần chạy + eval_gt có đúng nhãn
+- **Task ID:** TASK-015
+- **Mục tiêu:** So 2 thư mục kết quả (số mask/cảnh, alert, delay, nhãn) và `eval_gt.py` báo thêm độ khớp nhãn (touching/holding/stealing) so với GT, để biết 'đúng alert nhưng sai nhãn'.
+- **Các file liên quan:**
+  - `exhibitflow_pipeline/scripts/eval_gt.py`
+  - `exhibitflow_pipeline/scripts/compare_runs.py` (mới)
+  - `exhibitflow_pipeline/tests/test_eval_gt.py`
+- **Lưu ý kiến trúc & Trade-offs:**
+  - `eval_gt.py`: thêm cột `label_ok` (nhãn alert khớp nhãn GT; stealing GT chấp nhận holding/stealing) và `label_acc` tổng. Không đổi cột cũ. `compare_runs.py --a "results" --b "results (1)"`: bảng mỗi video: n_artifacts a→b, alerts a→b, hit a→b, red_gt% a→b, đánh dấu video bị lùi. Chỉ đọc JSON, nhẹ CPU.
+  - **Dependencies:** [TEMP] `pytest`.
+- **Verification Command:** `cd exhibitflow_pipeline && PYTHONDONTWRITEBYTECODE=1 nice -n 19 /tmp/venv_TASK-015/bin/python -m pytest tests/test_eval_gt.py -v && nice -n 19 python3 -B scripts/compare_runs.py --a results --b "results (1)"`
+- **Trạng thái:** VERIFIED (6 passed)
+
 ---
 **Thứ tự thực hiện:** TASK-010 (XONG) → 001 → 006 → 003 (ưu tiên recall, hoãn nếu ablation tracker chưa xong) → 005 → 004 → 002 → 007 → 008 → 009 (tuần tự, không song song để tránh tranh CPU).
 **Việc cần GPU/chạy lại video thật (làm sau, do người dùng quyết định khi GPU rảnh):** nâng pose lên yolov8s/m, tune VLM prompt cho video 4/6, chạy lại 12 video để lấy số liệu sau-sửa.

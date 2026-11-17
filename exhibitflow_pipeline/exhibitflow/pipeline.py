@@ -111,6 +111,34 @@ def _performance(ctx, vlm_records):
         gpu_peak_gb=ctx.gpu_peak_gb)
 
 
+BEHAVIOR_RANK = {'stealing': 4, 'holding': 3, 'touching': 2, 'normal': 1, 'uncertain': 0}
+
+
+def summarize_tracks(tasks):
+    """Tổng hợp nhãn theo track: chọn nhãn nặng nhất (stealing > holding > touching > normal)."""
+    by_tid = defaultdict(list)
+    for t in tasks or []:
+        tid = t.get('track_id')
+        if tid is None:
+            tid = t.get('tid')
+        if tid is None:
+            continue
+        by_tid[int(tid)].append(t)
+    out = {}
+    for tid, items in sorted(by_tid.items()):
+        best, best_rank = None, -1
+        for t in items:
+            lbl = t.get('label') or t.get('behavior')
+            if not lbl:
+                continue
+            norm = str(lbl).strip().lower()
+            r = BEHAVIOR_RANK.get(norm, -1)
+            if r > best_rank:
+                best, best_rank = norm, r
+        out[str(tid)] = dict(behavior=best, n_tasks=len(items))
+    return out
+
+
 def video_result(ctx, vpath, d, models, vlm_records, load_times):
     """Gom kết quả của 1 video thành dict JSON-safe."""
     fps = ctx.fps
@@ -159,6 +187,7 @@ def video_result(ctx, vpath, d, models, vlm_records, load_times):
                      n_alerts=len(alerts), alerts_by_behavior=dict(labels), n_vlm_tasks=len(tasks),
                      has_anomaly=bool(alerts)),
         alerts=alerts, events=events, vlm_tasks=tasks,
+        track_summary=summarize_tracks(tasks),
         diagnostics=diagnostics,
         artifacts=[dict(id=int(a['id']), label=a.get('label'), box=[round(float(v), 1) for v in a['box']],
                         pedestal=bool(a.get('pedestal'))) for a in ctx.art.artifacts],

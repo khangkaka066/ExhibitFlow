@@ -351,7 +351,12 @@ class LlamaCppVLM:
         for i, (path, t) in enumerate(zip(task['images'], task['times'])):
             buf = _io.BytesIO()
             load_image(path, self.max_pixels).save(buf, 'JPEG', quality=92)
-            content.append({'type': 'text', 'text': f'Frame {i + 1} (t={t:.2f}s):'})
+            if (task.get('has_before') and i == 0) or t is None:
+                ref_f = task.get('before_frame')
+                hdr = f'Image 1 (BEFORE, ref frame {ref_f}):' if ref_f is not None else 'Image 1 (BEFORE):'
+            else:
+                hdr = f'Frame {i + 1} (t={float(t):.2f}s):'
+            content.append({'type': 'text', 'text': hdr})
             content.append({'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(buf.getvalue()).decode()}})
         content.append({'type': 'text', 'text': task['prompt']})
         msgs = ([{'role': 'system', 'content': task['system']}] if task.get('system') else []) + [{'role': 'user', 'content': content}]
@@ -531,21 +536,31 @@ def _resized(path, side):
 
 
 def adapt_task(task, spec):
-    """n_images: lấy đều N ảnh trong các ảnh đã xuất | max_side: thu nhỏ cạnh dài | short_json: prompt chỉ hỏi label + confidence."""
+    """n_images: lấy đều N ảnh trong các ảnh đã xuất (giữ thêm ảnh BEFORE ở đầu nếu có -> n_images+1) | max_side: thu nhỏ cạnh dài | short_json: prompt chỉ hỏi label + confidence."""
     n, side, short = spec.get('n_images'), spec.get('max_side'), spec.get('short_json')
     if not (n or side or short):
         return task
-    imgs, times = list(task['images']), list(task['times'])
-    idx = list(range(len(imgs)))
-    if n and len(imgs) > n:
-        idx = sorted(set(np.linspace(0, len(imgs) - 1, n).round().astype(int).tolist()))
-        imgs, times = [imgs[i] for i in idx], [times[i] for i in idx]
+    has_before = bool(task.get('has_before')) and len(task.get('images', [])) >= 1
+    if has_before:
+        before_img, before_time = task['images'][0], task['times'][0]
+        seq_imgs, seq_times = list(task['images'][1:]), list(task['times'][1:])
+    else:
+        seq_imgs, seq_times = list(task['images']), list(task['times'])
+    idx = list(range(len(seq_imgs)))
+    if n and len(seq_imgs) > n:
+        idx = sorted(set(np.linspace(0, len(seq_imgs) - 1, n).round().astype(int).tolist()))
+        seq_imgs = [seq_imgs[i] for i in idx]
+        seq_times = [seq_times[i] for i in idx]
+    imgs = ([before_img] + seq_imgs) if has_before else seq_imgs
+    times = ([before_time] + seq_times) if has_before else seq_times
     if side:
         imgs = [_resized(p, side) for p in imgs]
     prompt = task['prompt']
     if n or short:
         m = re.search(r'about ([\d.]+)s apart', prompt)
         step = float(np.mean(np.diff(idx))) if len(idx) > 1 else 1.0
-        dt = float(m.group(1)) * step if m else (float(np.mean(np.diff(times))) if len(times) > 1 else 0.0)
-        prompt = (_short_template() if short else settings.PROMPT_TEMPLATE).format(n=len(imgs), dt=dt, tid=task['tid'])
+        dt = float(m.group(1)) * step if m else (float(np.mean(np.diff(seq_times))) if len(seq_times) > 1 else 0.0)
+        tmpl = _short_template() if short else settings.PROMPT_TEMPLATE
+        before_note = getattr(settings, 'BEFORE_NOTE', '') if has_before else ''
+        prompt = tmpl.format(n=len(imgs), dt=dt, tid=task['tid'], before_note=before_note)
     return {**task, 'images': imgs, 'times': times, 'prompt': prompt}

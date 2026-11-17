@@ -57,6 +57,8 @@ class FrameStore:
 class AlarmBoard:
     """Bảng theo dõi các track đang cảnh báo / đã bị gắn cờ ANOMALY."""
 
+    _SEVERITY = {'stealing': 4, 'holding': 3, 'touching': 2, 'normal': 1, 'uncertain': 0}
+
     def __init__(self, persist=None):
         self.lock, self.alarms = threading.Lock(), []
         self.flagged = {}
@@ -75,7 +77,10 @@ class AlarmBoard:
                 self.flagged[tid] = dict(behavior=behavior, first_frame=shown_from)
             else:
                 if behavior:
-                    prev['behavior'] = behavior
+                    cur_r = self._SEVERITY.get(str(prev.get('behavior') or '').lower(), -1)
+                    new_r = self._SEVERITY.get(str(behavior).lower(), -1)
+                    if new_r >= cur_r:
+                        prev['behavior'] = behavior
                 prev['first_frame'] = min(prev['first_frame'], shown_from)
             self.flag_roots.setdefault(tid, tid)
 
@@ -389,6 +394,8 @@ class VideoRun:
             dist = cv2.distanceTransform((~union).astype(np.uint8), cv2.DIST_L2, 5) if union.any() else None
             self.scenes.append(dict(sc, union=union, dist=dist))
         self.scene_starts = [sc['start'] for sc in self.scenes]
+        self._ref_idxs = {int(sc.get('ref_idx', sc.get('start', 0))) for sc in self.scenes}
+        self.ref_frames = {}
         self.cur_scene = 0
         sc0 = self.scenes[0]
         self.inter.set_artifacts(
@@ -425,6 +432,29 @@ class VideoRun:
 
     def scene_at(self, idx):
         return self.scenes[self.scene_index(idx)]
+
+    def capture_ref_frame(self, idx, native):
+        """Giữ bản thu nhỏ (kích thước store) của frame tham chiếu mỗi cảnh để không bị ring buffer ghi đè."""
+        if idx in self._ref_idxs and idx not in self.ref_frames:
+            sw, sh = self.store.size
+            nh, nw = native.shape[:2]
+            self.ref_frames[idx] = (native.copy() if (nw, nh) == (sw, sh)
+                                    else cv2.resize(native, (sw, sh), interpolation=cv2.INTER_AREA))
+
+    def get_ref_frame(self, frame_idx):
+        """Trả (ref_idx, img_store) của cảnh chứa frame_idx; trả (ref_idx, None) nếu chưa có ảnh."""
+        sc = self.scene_at(frame_idx)
+        ref_idx = int(sc.get('ref_idx', sc.get('start', 0)))
+        img = self.ref_frames.get(ref_idx)
+        if img is None:
+            img = self.store.get(ref_idx)
+        if img is None:
+            img = sc.get('ref_frame')
+        if img is not None:
+            sw, sh = self.store.size
+            if img.shape[1] != sw or img.shape[0] != sh:
+                img = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
+        return ref_idx, img
 
     # ---- callback từ VLMWorker (thread VLM) ----
     def on_vlm_result(self, task, rec):
@@ -498,7 +528,8 @@ def _stage_fns(ctx):
         p.states = ctx.inter.step(p.idx, p.tracks, work=p.work)
 
     def interact_flush():
-        ctx.inter.flush(ctx.last_frame)
+        if ctx.last_frame >= 0:
+            ctx.inter.flush(ctx.last_frame)
         return []
 
     def sink(p):
@@ -545,6 +576,7 @@ def reader_loop(ctx, out_q):
                 break
             work = cv2.resize(native, (d['W'], d['H']))
             ctx.store.put(idx, native)
+            ctx.capture_ref_frame(idx, native)
             t_r1 = time.perf_counter()
             ctx.t_cap[idx] = t_r0
             ctx.rec.add('read', idx, 0.0, (t_r1 - t_r0) * 1e3)

@@ -389,6 +389,12 @@ PARAMS: list[Param] = [
         'Dùng khi tắt relaxed_gate. Tăng → lọc event thoáng qua tốt hơn nhưng dễ sót chạm ngắn. Giảm → nhạy hơn.',
         min=1, max=60, step=1,
     ),
+    _p(
+        'ambiguous_diff_thr', 'CFG.ambiguous_diff_thr', 'float', 'contact_gate',
+        'Ngưỡng chênh khoảng cách coi là nhập nhằng',
+        'Khoảng cách chênh lệch tối đa giữa 2 mask gần nhất để coi là nhập nhằng (ambiguous). Khi ambiguous_policy=nearest sẽ chọn mask gần nhất.',
+        min=0.0, max=1.0, step=0.05,
+    ),
 
     # ---- VLM dự phòng ----
     _p(
@@ -399,7 +405,7 @@ PARAMS: list[Param] = [
     _p(
         'periodic_vlm_min_near_sec', 'RT.periodic_vlm.min_near_sec', 'float', 'periodic_vlm',
         'Thời gian ở vùng NEAR tối thiểu (giây)',
-        'Giảm → gửi VLM dự phòng sớm hơn (nhạy hơn nhưng tốn VLM). Tăng → chỉ kiểm tra khi người nán lại lâu.',
+        'Giảm → gửi VLM dự phòng sớm hơn cho video ngắn (nhạy hơn nhưng tốn VLM). Tăng → chỉ kiểm tra khi người nán lại lâu.',
         min=0.5, max=30.0, step=0.5,
     ),
     _p(
@@ -407,6 +413,23 @@ PARAMS: list[Param] = [
         'Thời gian nghỉ giữa 2 lần gửi dự phòng (giây)',
         'Giảm → kiểm tra lại dày hơn khi người vẫn đứng gần (tốn VLM). Tăng → giảm tải VLM nhưng có thể lỡ khoảnh khắc giữa chừng.',
         min=0.5, max=60.0, step=0.5,
+    ),
+    _p(
+        'periodic_vlm_flush_on_end', 'RT.periodic_vlm.flush_on_end', 'bool', 'periodic_vlm',
+        'Gửi VLM khi mất track hoặc kết thúc video',
+        'Bật: nếu người đã ở NEAR đủ lâu rồi mất dấu (> max_gap) hoặc hết video mà chưa có event/VLM, gửi 1 đoạn cuối. Tắt: bỏ qua.',
+    ),
+    _p(
+        'periodic_vlm_flush_min_sec', 'RT.periodic_vlm.flush_min_sec', 'float', 'periodic_vlm',
+        'Thời gian NEAR tối thiểu để flush cuối (giây)',
+        'Giảm → dễ gửi đoạn cuối cho lượt tiếp cận ngắn (tốn VLM). Tăng → chỉ flush khi người đứng gần đủ lâu.',
+        min=0.2, max=30.0, step=0.2,
+    ),
+    _p(
+        'periodic_vlm_flush_max_per_track', 'RT.periodic_vlm.flush_max_per_track', 'int', 'periodic_vlm',
+        'Số lần flush tối đa mỗi track',
+        'Giới hạn số đoạn VLM gửi qua flush cho cùng một track_id để tránh trùng lặp khi track đứt/nối nhiều lần.',
+        min=1, max=10, step=1,
     ),
 
     # ---- Phát hiện biến mất (stealing) ----
@@ -461,7 +484,7 @@ PARAMS: list[Param] = [
     _p(
         'seg_multi_frame_enabled', 'RT.seg_multi_frame.enabled', 'bool', 'segmentation',
         'Segment đa frame mỗi cảnh',
-        'Bật: segment nhiều frame rồi hợp nhất theo IoU để giảm sót mask và lọc mask nhiễu. Tắt: chỉ segment 1 frame/cảnh (nhanh hơn).',
+        'Bật: segment nhiều frame rồi hợp nhất (union) mask theo IoU để giữ đủ mask và bù hiện vật bị che. Tắt: chỉ segment 1 frame/cảnh (nhanh hơn).',
     ),
     _p(
         'seg_multi_frame_step_sec', 'RT.seg_multi_frame.step_sec', 'float', 'segmentation',
@@ -472,7 +495,30 @@ PARAMS: list[Param] = [
     _p(
         'seg_multi_frame_max_frames_per_scene', 'RT.seg_multi_frame.max_frames_per_scene', 'int', 'segmentation',
         'Số frame mẫu tối đa mỗi cảnh',
-        'Tăng → bỏ phiếu mask chắc hơn ở cảnh dài (tốn thời gian chuẩn bị). Giảm → chuẩn bị nhanh hơn nhưng ít phiếu hơn.',
+        'Tăng → lấy mẫu nhiều hơn ở cảnh dài (tốn thời gian chuẩn bị). Giảm → chuẩn bị nhanh hơn.',
+        min=1, max=20, step=1,
+    ),
+    _p(
+        'seg_merge_iou', 'RT.seg_merge_iou', 'float', 'segmentation',
+        'Ngưỡng IoU gộp mask trùng giữa các frame',
+        'Giảm → dễ gộp hai mask hơi lệch thành một (ít mask trùng nhưng dễ gộp nhầm vật gần nhau). Tăng → tách mask chặt hơn.',
+        min=0.1, max=0.95, step=0.05,
+    ),
+    _p(
+        'seg_merge_min_votes', 'RT.seg_merge_min_votes', 'int', 'segmentation',
+        'Số frame tối thiểu giữ mask (min_votes)',
+        '1 = lấy hợp (union) mọi mask của các frame mẫu (khuyến nghị). Tăng lên 2+ (khi tắt giữ frame tham chiếu) để lọc mask thoáng qua.',
+        min=1, max=20, step=1,
+    ),
+    _p(
+        'seg_merge_keep_ref', 'RT.seg_merge_keep_ref', 'bool', 'segmentation',
+        'Luôn giữ nguyên mask của frame tham chiếu',
+        'Bật: mọi mask ở frame đầu cảnh luôn được giữ (tối thiểu bằng bản 1 frame), frame sau chỉ bổ sung mask mới. Tắt: lọc cả frame đầu theo min_votes.',
+    ),
+    _p(
+        'seg_merge_min_votes_extra', 'RT.seg_merge_min_votes_extra', 'int', 'segmentation',
+        'Số phiếu tối thiểu cho mask ở frame phụ',
+        '1 = giữ mọi mask mới phát hiện thêm ở frame khác (bù mask bị che ở frame đầu). Tăng lên 2+ để chỉ bổ sung mask xuất hiện lặp lại.',
         min=1, max=20, step=1,
     ),
     _p(

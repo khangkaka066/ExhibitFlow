@@ -95,7 +95,9 @@ RT = dict(
         max_frames_per_scene=4, # tối đa số frame lấy mẫu mỗi cảnh
     ),
     seg_merge_iou=0.5,          # ngưỡng IoU để hợp nhất mask cùng hiện vật giữa các frame trong cảnh
-    seg_merge_min_votes=2,      # giữ mask xuất hiện >= N frame (hoặc có điểm cao nhất)
+    seg_merge_min_votes=1,      # giữ mask xuất hiện >= N frame (mặc định 1 = union mọi frame mẫu)
+    seg_merge_keep_ref=True,    # luôn giữ nguyên mọi mask ở frame tham chiếu đầu cảnh (superset bản 1 frame)
+    seg_merge_min_votes_extra=1,  # số phiếu tối thiểu cho mask chỉ xuất hiện ở frame phụ (không thuộc frame tham chiếu)
     scene_cut_diff=25.0,        # 'auto': chênh lệch xám trung bình giữa 2 frame liền nhau (ảnh 64x36) >= ngưỡng -> cắt cảnh
                                 # (frame thường ~0-2, cắt cảnh ~30-50)
     scene_color_cut=True,       # 'auto': bật tiêu chí cắt cảnh theo histogram màu (bắt đổi xám->màu / đổi sáng màu)
@@ -109,9 +111,12 @@ RT = dict(
     vlm_early_sec=None,         # vd 2.0: gửi VLM ngay khi chạm liên tục 2s (báo động sớm), không đợi event kết thúc
     periodic_vlm=dict(
         enabled=True,           # đường dự phòng: ở vùng NEAR liên tục >= min_near_sec mà chưa có event -> vẫn gửi VLM
-        min_near_sec=3.0,       # thời gian tối thiểu ở vùng NEAR liên tục (giây)
+        min_near_sec=1.0,       # thời gian tối thiểu ở vùng NEAR liên tục (giây)
         cooldown_sec=3.0,       # khoảng cách tối thiểu giữa 2 lần gửi dự phòng cho cùng track
         max_near_gap_frames=5,  # cho phép đứt quãng ngắn (pose/hand hụt vài frame) mà không reset bộ đếm NEAR
+        flush_on_end=True,      # gửi VLM cuối khi track mất > max_gap hoặc hết video nếu đã NEAR >= flush_min_sec
+        flush_min_sec=1.0,      # thời gian NEAR liên tục tối thiểu (giây) để flush cuối track / cuối video
+        flush_max_per_track=2,  # số lần flush tối đa cho mỗi track
     ),
     missing_detect=dict(
         enabled=True,               # đường dự phòng bắt stealing: phát hiện hiện vật biến mất khỏi vùng mask / người mang vật đi
@@ -177,6 +182,8 @@ CFG = dict(
     self_touch_head_frac=0.10, state_ground_max_gap=0.30,
     foot_from_pose=True, foot_extend_min_frac=0.15, foot_extend_max_frac=0.8,
     event_merge_gap_seconds=0.5, event_min_frames=12, max_tasks_per_video=40,
+    ambiguous_policy='nearest', # 'nearest': chọn mask gần nhất khi 2 mask sát nhau | 'reject': loại (AMBIGUOUS)
+    ambiguous_diff_thr=0.15,    # chênh lệch khoảng cách chuẩn hoá tối đa để coi 2 mask là nhập nhằng
     relaxed_gate=True,          # nới cổng chạm có kiểm soát (event ngắn / người nhỏ / bệ pedestal)
     relaxed_event_min_frames=8, relaxed_min_person_h_px=60,
     relaxed_hold_seconds=0.15, relaxed_pedestal_contact_thr=0.45,
@@ -206,14 +213,27 @@ SEG_REF_FRAMES = {
     # '9': [(0, 12), (537, 549), (720, 732), (1227, 1227)],
 }
 
-EXPORT = dict(pre_sec=1.0, post_sec=1.0, max_window_sec=8.0, n_sample_frames=12, crop_pad=0.4, crop_out_long=768)
+EXPORT = dict(pre_sec=1.0, post_sec=3.0, max_window_sec=10.0, n_sample_frames=12, crop_pad=0.4, crop_out_long=768,
+              before_ref=True)
 MASK_REGIONS = [[0.855, 0.925, 0.995, 0.990]]   # xoá watermark (toạ độ tương đối); [] nếu không cần
 VLM_IMAGE_SET = 'marked'                         # 'marked' | 'clean'
 
-PROMPT_TEMPLATE = '''You are a museum security analyst. The {n} images are consecutive frames \
+BEFORE_NOTE = ('Image 1 is a reference taken BEFORE (exhibit intact). '
+               'If the exhibit visible in Image 1 is missing, moved or carried away in the later frames, answer stealing.\n')
+
+
+class _PromptTemplate(str):
+    """Chuỗi prompt hỗ trợ tuỳ chọn {before_note} mặc định rỗng khi caller cũ chỉ truyền (n, dt, tid)."""
+
+    def format(self, *args, **kwargs):
+        kwargs.setdefault('before_note', '')
+        return super().format(*args, **kwargs)
+
+
+PROMPT_TEMPLATE = _PromptTemplate('''You are a museum security analyst. The {n} images are consecutive frames \
 (about {dt:.2f}s apart, in order) cropped around ONE visitor marked with a RED box labeled "ID {tid}". \
 BLUE outline(s) mark exhibit(s).
-Classify ONLY the red-box person's behavior toward the exhibit:
+{before_note}Classify ONLY the red-box person's behavior toward the exhibit:
 - "normal": looking, walking, pointing, standing close without contact
 - "touching": hand makes contact with the exhibit, exhibit stays in place
 - "holding": person lifts / holds / moves the exhibit
@@ -221,13 +241,13 @@ Classify ONLY the red-box person's behavior toward the exhibit:
 - "uncertain": view is occluded or too small to decide
 Answer JSON only:
 {{"label": "...", "confidence": 0.0, "contact_frames": [], "evidence": "<one sentence>"}}
-"contact_frames" = the Frame numbers (1..{n}) in which the red-box person's hand is VISIBLY touching/holding the exhibit (empty list if never). Do not include frames where the hand is only approaching or near.'''
+"contact_frames" = the Frame numbers (1..{n}) in which the red-box person's hand is VISIBLY touching/holding the exhibit (empty list if never). Do not include frames where the hand is only approaching or near.''')
 SYSTEM_PROMPT = ('You are a careful CCTV analyst for a museum. Judge only what is visible in the frames. '
                  'Touching means the hand visibly reaches the exhibit or its pedestal; being near is not touching. '
                  'Always answer with a single JSON object and nothing else.')
 
 DEFAULT_PROMPT_TEMPLATE, DEFAULT_SYSTEM_PROMPT = PROMPT_TEMPLATE, SYSTEM_PROMPT   # bản gốc (dashboard ghi đè rồi khôi phục được)
-PROMPT_FIELDS = ('n', 'dt', 'tid')                                                  # biến được {format}; dấu { } khác phải viết {{ }}
+PROMPT_FIELDS = ('n', 'dt', 'tid', 'before_note')                                   # biến được {format}; dấu { } khác phải viết {{ }}
 
 ANOMALY_LABELS = ('touching', 'holding', 'stealing')
 VLM_MIN_CONF = 0.0

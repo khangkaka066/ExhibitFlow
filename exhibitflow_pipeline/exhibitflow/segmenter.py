@@ -322,7 +322,7 @@ SCENE_ID_STEP = 10000    # id hiện vật của cảnh k = id gốc + k * 10000
 def artifact_cache_dir(key, seg_spec, ref_idx, sample_idxs=None):
     refs = [int(i) for i in (sample_idxs if sample_idxs is not None else [ref_idx])]
     tag = spec_tag(dict(
-        v=2,
+        v=3,
         seg=seg_spec,
         cfg=SEGMENTATION_CFG,
         ref=int(ref_idx),
@@ -330,7 +330,9 @@ def artifact_cache_dir(key, seg_spec, ref_idx, sample_idxs=None):
         w=CFG['width'],
         mf=RT.get('seg_multi_frame'),
         iou=RT.get('seg_merge_iou', 0.5),
-        mv=RT.get('seg_merge_min_votes', 2),
+        mv=RT.get('seg_merge_min_votes', 1),
+        kr=RT.get('seg_merge_keep_ref', True),
+        mve=RT.get('seg_merge_min_votes_extra', 1),
     ))
     return settings.CACHE / f'{key}_artifacts_{tag}'
 
@@ -344,10 +346,16 @@ def mask_iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
-def merge_masks(frame_results, iou_thr=0.5, min_votes=2):
-    """Hợp nhất mask qua nhiều frame trong 1 cảnh theo IoU >= iou_thr.
+def merge_masks(frame_results, iou_thr=0.5, min_votes=1, keep_ref=True, min_votes_extra=1, ref_frame=None):
+    """Hợp nhất (union) mask qua nhiều frame trong 1 cảnh theo IoU >= iou_thr.
     frame_results: list [(frame_idx, artifacts, masks)] hoặc [(artifacts, masks)].
-    Giữ cụm mask xuất hiện ở >= min_votes frame khác nhau hoặc cụm có điểm cao nhất."""
+    Khi keep_ref=True: mọi mask ở frame tham chiếu (frame đầu cảnh / ref_frame) luôn được giữ nguyên,
+    các frame khác chỉ bổ sung mask mới (IoU < iou_thr với mọi mask đã có) đạt >= min_votes_extra phiếu."""
+    if not frame_results:
+        return [], {}
+    first_item = frame_results[0]
+    ref_fidx = int(ref_frame) if ref_frame is not None else (int(first_item[0]) if len(first_item) == 3 else 0)
+
     candidates = []
     for idx, item in enumerate(frame_results):
         if len(item) == 3:
@@ -362,28 +370,59 @@ def merge_masks(frame_results, iou_thr=0.5, min_votes=2):
     if not candidates:
         return [], {}
 
-    candidates.sort(key=lambda x: (-float(x[1].get('score', 0.0)), x[0], int(x[1].get('id', 0))))
     clusters = []
-    for fidx, art, mk in candidates:
-        best_cl, best_iou = None, -1.0
-        for cl in clusters:
-            if fidx in cl['frames']:
-                continue
-            iou = mask_iou(mk, cl['rep_mask'])
-            if iou >= iou_thr and iou > best_iou:
-                best_cl, best_iou = cl, iou
-        if best_cl is not None:
-            best_cl['members'].append((fidx, art, mk))
-            best_cl['frames'].add(fidx)
-        else:
-            clusters.append(dict(rep_mask=mk, members=[(fidx, art, mk)], frames={fidx}))
 
-    kept_clusters = [cl for cl in clusters if len(cl['frames']) >= min_votes or cl is clusters[0]]
+    def _add_to_clusters(items, from_ref_flag):
+        for fidx, art, mk in items:
+            best_cl, best_iou = None, -1.0
+            for cl in clusters:
+                iou = mask_iou(mk, cl['rep_mask'])
+                if iou >= iou_thr and iou > best_iou:
+                    best_cl, best_iou = cl, iou
+            if best_cl is not None:
+                if fidx not in best_cl['frames']:
+                    best_cl['members'].append((fidx, art, mk))
+                    best_cl['frames'].add(fidx)
+            else:
+                clusters.append(dict(rep_mask=mk, members=[(fidx, art, mk)], frames={fidx}, from_ref=from_ref_flag))
+
+    if keep_ref:
+        ref_cands = sorted(
+            [c for c in candidates if c[0] == ref_fidx],
+            key=lambda x: (-float(x[1].get('score', 0.0)), int(x[1].get('id', 0))),
+        )
+        other_cands = sorted(
+            [c for c in candidates if c[0] != ref_fidx],
+            key=lambda x: (-float(x[1].get('score', 0.0)), x[0], int(x[1].get('id', 0))),
+        )
+        _add_to_clusters(ref_cands, True)
+        _add_to_clusters(other_cands, False)
+    else:
+        all_cands = sorted(
+            candidates,
+            key=lambda x: (-float(x[1].get('score', 0.0)), x[0], int(x[1].get('id', 0))),
+        )
+        _add_to_clusters(all_cands, False)
+
+    min_votes = max(1, int(min_votes))
+    min_votes_extra = max(1, int(min_votes_extra))
+    kept_clusters = []
+    for cl in clusters:
+        votes = len(cl['frames'])
+        if keep_ref and cl['from_ref']:
+            kept_clusters.append(cl)
+        else:
+            req = min_votes if cl['from_ref'] else max(min_votes, min_votes_extra)
+            if votes >= req:
+                kept_clusters.append(cl)
+
     merged_arts, merged_masks = [], {}
     for new_id, cl in enumerate(kept_clusters):
         members = cl['members']
         n = len(members)
-        if n >= 3:
+        if keep_ref and cl['from_ref']:
+            mk = members[0][2].copy()
+        elif n >= 3:
             votes_px = np.sum([m.astype(np.int32) for _, _, m in members], axis=0)
             mk = votes_px >= ((n + 1) // 2)
             if not mk.any():
@@ -393,7 +432,8 @@ def merge_masks(frame_results, iou_thr=0.5, min_votes=2):
         ys, xs = np.nonzero(mk)
         if len(ys) == 0:
             continue
-        best = dict(members[0][1])
+        top = max(members, key=lambda m: float(m[1].get('score', 0.0)))
+        best = dict(top[1])
         best.update(
             id=new_id,
             box=[float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)],
@@ -569,7 +609,10 @@ def segment_scene(key, M, seg, frame, ref_idx, sid, cache_key=None, frames=None,
             arts, masks = merge_masks(
                 per_frame,
                 iou_thr=float(RT.get('seg_merge_iou', 0.5)),
-                min_votes=int(RT.get('seg_merge_min_votes', 2)),
+                min_votes=int(RT.get('seg_merge_min_votes', 1)),
+                keep_ref=bool(RT.get('seg_merge_keep_ref', True)),
+                min_votes_extra=int(RT.get('seg_merge_min_votes_extra', 1)),
+                ref_frame=int(ref_idx),
             )
         cache_dir.mkdir(parents=True, exist_ok=True)
         for aid, mk in masks.items():

@@ -8,6 +8,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 
 import eval_gt  # noqa: E402
+import compare_runs  # noqa: E402
 
 
 def _write_result(results_dir: Path, vid: str, n_frames: int, alerts: list[dict], **extra):
@@ -178,3 +179,153 @@ def test_cli_outputs_table_and_json_file(tmp_path: Path, capsys):
     saved = json.loads(out_json.read_text(encoding='utf-8'))
     assert saved['summary']['hits'] == 1
     assert saved['videos'][0]['red_gt_pct'] == 80.0
+
+
+def test_label_matching_and_label_acc_in_eval_gt(tmp_path: Path):
+    assert eval_gt.label_matches('touching', 'touching') is True
+    assert eval_gt.label_matches('touching', 'stealing') is False
+    assert eval_gt.label_matches('stealing', 'stealing') is True
+    assert eval_gt.label_matches('stealing', 'holding') is True
+    assert eval_gt.label_matches('stealing', 'touching') is False
+    assert eval_gt.label_matches('stealing', '') is False
+
+    gt_file = tmp_path / 'gt.csv'
+    gt_file.write_text(
+        'video,start_frame,end_frame,label,note\n'
+        '1,50,100,touching,\n'
+        '2,50,100,stealing,\n'
+        '3,50,100,stealing,\n'
+        '4,50,100,stealing,\n'
+        '5,50,100,stealing,\n',
+        encoding='utf-8',
+    )
+    res_dir = tmp_path / 'results'
+    # 1: touching == touching -> label_ok True
+    _write_result(res_dir, '1', n_frames=120, alerts=[{'track_id': 1, 'behavior': 'touching', 'alarm_start_frame': 55, 'alarm_end_frame': 80}])
+    # 2: stealing GT, holding pred -> label_ok True
+    _write_result(res_dir, '2', n_frames=120, alerts=[{'track_id': 1, 'behavior': 'holding', 'alarm_start_frame': 55, 'alarm_end_frame': 80}])
+    # 3: stealing GT, stealing pred -> label_ok True
+    _write_result(res_dir, '3', n_frames=120, alerts=[{'track_id': 1, 'behavior': 'stealing', 'alarm_start_frame': 55, 'alarm_end_frame': 80}])
+    # 4: stealing GT, touching pred -> hit True nhưng label_ok False ("đúng alert nhưng sai nhãn")
+    _write_result(res_dir, '4', n_frames=120, alerts=[{'track_id': 1, 'behavior': 'touching', 'alarm_start_frame': 55, 'alarm_end_frame': 80}])
+    # 5: miss -> label_ok None (không tính vào label_eval_count)
+    _write_result(res_dir, '5', n_frames=120, alerts=[])
+
+    report = eval_gt.evaluate_all(res_dir, gt_file)
+    by_vid = {r['video']: r for r in report['videos']}
+    assert by_vid['1']['label_ok'] is True
+    assert by_vid['2']['label_ok'] is True
+    assert by_vid['3']['label_ok'] is True
+    assert by_vid['4']['hit'] is True
+    assert by_vid['4']['label_ok'] is False
+    assert by_vid['4']['pred_labels'] == ['touching']
+    assert by_vid['5']['hit'] is False
+    assert by_vid['5']['label_ok'] is None
+
+    s = report['summary']
+    assert s['label_ok_count'] == 3
+    assert s['label_eval_count'] == 4
+    assert s['label_acc'] == 0.75
+
+    txt = eval_gt.format_report(report)
+    header_line = txt.splitlines()[0]
+    for col in ['video', 'label', 'gt_frames', 'hit', 'delay(f)', 'alerts', 'fp', 'ids', 'red_gt%', 'tracks', 'label_ok']:
+        assert col in header_line
+    assert 'label_acc=75.0% (3/4)' in txt
+
+
+def test_compare_runs_detects_regressions_improvements_and_masks(tmp_path: Path, capsys):
+    gt_file = tmp_path / 'gt.csv'
+    gt_file.write_text(
+        'video,start_frame,end_frame,label,note\n'
+        '1,50,100,touching,\n'
+        '2,50,100,stealing,\n'
+        '3,50,100,stealing,\n'
+        '4,50,100,touching,\n'
+        '5,,,normal,\n',
+        encoding='utf-8',
+    )
+    dir_a = tmp_path / 'run_a'
+    dir_b = tmp_path / 'run_b'
+
+    # Video 1: tụt hit + red_gt + masks (19 -> 6) => REGRESS
+    _write_result(
+        dir_a, '1', n_frames=120,
+        alerts=[{'track_id': 1, 'behavior': 'touching', 'alarm_start_frame': 50, 'alarm_end_frame': 100}],
+        artifacts=[{}] * 19, scenes=[{'start_frame': 0, 'n_artifacts': 19}],
+    )
+    _write_result(
+        dir_b, '1', n_frames=120, alerts=[],
+        artifacts=[{}] * 6, scenes=[{'start_frame': 0, 'n_artifacts': 6}],
+    )
+
+    # Video 2: tụt label_ok (holding -> touching trên stealing GT) => REGRESS
+    _write_result(
+        dir_a, '2', n_frames=120,
+        alerts=[{'track_id': 1, 'behavior': 'holding', 'alarm_start_frame': 50, 'alarm_end_frame': 100}],
+        artifacts=[{}] * 8, scenes=[{'start_frame': 0, 'n_artifacts': 8}],
+    )
+    _write_result(
+        dir_b, '2', n_frames=120,
+        alerts=[{'track_id': 1, 'behavior': 'touching', 'alarm_start_frame': 50, 'alarm_end_frame': 100}],
+        artifacts=[{}] * 8, scenes=[{'start_frame': 0, 'n_artifacts': 8}],
+    )
+
+    # Video 3: cải thiện hit (miss -> holding) => IMPROVED
+    _write_result(
+        dir_a, '3', n_frames=120, alerts=[],
+        artifacts=[{}] * 5, scenes=[{'start_frame': 0, 'n_artifacts': 5}],
+    )
+    _write_result(
+        dir_b, '3', n_frames=120,
+        alerts=[{'track_id': 2, 'behavior': 'holding', 'alarm_start_frame': 55, 'alarm_end_frame': 100}],
+        artifacts=[{}] * 6, scenes=[{'start_frame': 0, 'n_artifacts': 6}],
+    )
+
+    # Video 4: cải thiện hit + red_gt nhưng masks tụt mạnh 10 -> 3 => MIXED
+    _write_result(
+        dir_a, '4', n_frames=120, alerts=[],
+        artifacts=[{}] * 10, scenes=[{'start_frame': 0, 'n_artifacts': 10}],
+    )
+    _write_result(
+        dir_b, '4', n_frames=120,
+        alerts=[{'track_id': 3, 'behavior': 'touching', 'alarm_start_frame': 50, 'alarm_end_frame': 100}],
+        artifacts=[{}] * 3, scenes=[{'start_frame': 0, 'n_artifacts': 3}],
+    )
+
+    # Video 5: normal video phát sinh FP mới => REGRESS(fp)
+    _write_result(dir_a, '5', n_frames=100, alerts=[], artifacts=[{}] * 4, scenes=[{'start_frame': 0, 'n_artifacts': 4}])
+    _write_result(
+        dir_b, '5', n_frames=100,
+        alerts=[{'track_id': 1, 'behavior': 'touching', 'alarm_start_frame': 10, 'alarm_end_frame': 20}],
+        artifacts=[{}] * 4, scenes=[{'start_frame': 0, 'n_artifacts': 4}],
+    )
+
+    out_json = tmp_path / 'cmp.json'
+    rc = compare_runs.main(['--a', str(dir_a), '--b', str(dir_b), '--gt', str(gt_file), '--out', str(out_json)])
+    assert rc == 0
+    stdout = capsys.readouterr().out
+    assert 'Summary A->B:' in stdout
+    assert 'Regressed videos:' in stdout
+    assert out_json.is_file()
+
+    rep = json.loads(out_json.read_text(encoding='utf-8'))
+    by_vid = {v['video']: v for v in rep['videos']}
+    assert by_vid['1']['regressed'] is True
+    assert {'hit', 'red_gt', 'masks'} <= set(by_vid['1']['regressions'])
+    assert by_vid['2']['regressed'] is True
+    assert 'label' in by_vid['2']['regressions']
+    assert by_vid['3']['regressed'] is False
+    assert 'hit' in by_vid['3']['improvements']
+    assert 'MIXED' in by_vid['4']['status']
+    assert by_vid['5']['regressed'] is True
+    assert 'fp' in by_vid['5']['regressions']
+    assert rep['summary']['regressed_videos'] == ['1', '2', '5']
+    assert rep['summary']['mask_drop_videos'] == ['1', '4']
+
+    # Chạy không có GT vẫn so sánh được số mask & alerts
+    no_gt = compare_runs.compare_runs(dir_a, dir_b, gt_path=None)
+    no_gt_v1 = next(v for v in no_gt['videos'] if v['video'] == '1')
+    assert no_gt_v1['a']['n_artifacts'] == 19 and no_gt_v1['b']['n_artifacts'] == 6
+    assert no_gt_v1['regressed'] is True
+

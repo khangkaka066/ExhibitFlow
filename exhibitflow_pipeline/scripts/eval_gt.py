@@ -7,6 +7,7 @@ Metrics trên mỗi video:
 - fp: số alert nằm hoàn toàn ngoài mọi khoảng GT
 - ids: số track_id khác nhau xuất hiện trong alerts
 - red_gt_pct: % số frame GT mà có người bị gắn cờ còn đỏ (giao của các khoảng đỏ với khoảng GT)
+- label_ok: nhãn alert khớp nhãn GT (stealing GT chấp nhận holding/stealing)
 
 Chạy:
     python3 scripts/eval_gt.py --results results --gt "../benchmark anomaly/gt_videos.csv"
@@ -16,7 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,8 @@ class VideoEval:
     n_unique_ids: int
     red_gt_pct: float | None
     n_people_tracks: int | None = None
+    pred_labels: list[str] = field(default_factory=list)
+    label_ok: bool | None = None
 
 
 def _sort_key(video_id: str) -> tuple[int, int | str]:
@@ -213,6 +216,32 @@ def _alert_interval(alert: dict[str, Any]) -> tuple[int, int] | None:
     return (min(lo_i, hi_i), max(lo_i, hi_i))
 
 
+def _alert_label(alert: dict[str, Any]) -> str:
+    raw = alert.get('behavior') if alert.get('behavior') is not None else alert.get('label')
+    return str(raw or '').strip().lower()
+
+
+def label_matches(gt_label: str, pred_label: str) -> bool:
+    """So khớp nhãn dự đoán với GT; GT 'stealing' chấp nhận cả 'holding' và 'stealing'."""
+    gt = (gt_label or '').strip().lower()
+    pred = (pred_label or '').strip().lower()
+    if not gt or not pred:
+        return False
+    if gt == 'stealing':
+        return pred in {'stealing', 'holding'}
+    return pred == gt
+
+
+def _unique_ordered(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
 def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any] | None) -> VideoEval:
     gt_pairs = [(g.start_frame, g.end_frame) for g in gt_spans]
     labels = sorted({g.label for g in gt_spans if g.label})
@@ -234,6 +263,8 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
             n_unique_ids=0,
             red_gt_pct=0.0 if gt_spans else None,
             n_people_tracks=None,
+            pred_labels=[],
+            label_ok=None,
         )
 
     alerts = result.get('alerts') or []
@@ -241,8 +272,14 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
     n_people = (result.get('summary') or {}).get('n_people_tracks')
 
     tp_pairs: list[tuple[int, int, GtSpan]] = []
+    tp_label_matched = False
+    tp_labels: list[str] = []
+    all_alert_labels: list[str] = []
     fp_count = 0
     for a in alerts:
+        p_lbl = _alert_label(a)
+        if p_lbl:
+            all_alert_labels.append(p_lbl)
         iv = _alert_interval(a)
         if iv is None:
             continue
@@ -250,6 +287,10 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
         if matched:
             first_gt = min(matched, key=lambda g: (g.start_frame, g.end_frame))
             tp_pairs.append((iv[0], iv[1], first_gt))
+            if p_lbl:
+                tp_labels.append(p_lbl)
+            if any(label_matches(g.label, p_lbl) for g in matched):
+                tp_label_matched = True
         else:
             fp_count += 1
 
@@ -267,8 +308,10 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
         if tp_pairs:
             earliest_start, _, matched_gt = min(tp_pairs, key=lambda x: (x[0], x[1]))
             delay_frames: int | None = earliest_start - matched_gt.start_frame
+            label_ok: bool | None = tp_label_matched
         else:
             delay_frames = None
+            label_ok = None
         gt_total_frames = interval_length(gt_pairs)
         red_intervals = extract_red_intervals(result)
         red_in_gt = interval_intersection_length(gt_pairs, red_intervals)
@@ -277,6 +320,9 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
         hit = None
         delay_frames = None
         red_gt_pct = None
+        label_ok = None
+
+    pred_labels = _unique_ordered(tp_labels if tp_labels else all_alert_labels)
 
     return VideoEval(
         video=video_id,
@@ -293,6 +339,8 @@ def evaluate_video(video_id: str, gt_spans: list[GtSpan], result: dict[str, Any]
         n_unique_ids=len(unique_ids),
         red_gt_pct=red_gt_pct,
         n_people_tracks=int(n_people) if isinstance(n_people, (int, float)) else None,
+        pred_labels=pred_labels,
+        label_ok=label_ok,
     )
 
 
@@ -320,6 +368,9 @@ def evaluate_all(results_dir: Path, gt_path: Path) -> dict[str, Any]:
     delays = [r.delay_frames for r in pos_rows if r.delay_frames is not None]
     red_all = [r.red_gt_pct for r in pos_rows if r.red_gt_pct is not None]
     red_hit = [r.red_gt_pct for r in pos_rows if r.hit and r.red_gt_pct is not None]
+    label_eval_rows = [r for r in pos_rows if r.hit and r.label_ok is not None]
+    label_ok_count = sum(1 for r in label_eval_rows if r.label_ok)
+    label_eval_count = len(label_eval_rows)
 
     summary = {
         'n_videos': len(rows),
@@ -337,6 +388,9 @@ def evaluate_all(results_dir: Path, gt_path: Path) -> dict[str, Any]:
         'total_unique_ids': sum(r.n_unique_ids for r in rows),
         'mean_red_gt_pct': round(sum(red_all) / len(red_all), 2) if red_all else None,
         'mean_red_gt_pct_hit': round(sum(red_hit) / len(red_hit), 2) if red_hit else None,
+        'label_ok_count': label_ok_count,
+        'label_eval_count': label_eval_count,
+        'label_acc': round(label_ok_count / label_eval_count, 4) if label_eval_count else None,
     }
     return {'summary': summary, 'videos': [asdict(r) for r in rows]}
 
@@ -344,7 +398,7 @@ def evaluate_all(results_dir: Path, gt_path: Path) -> dict[str, Any]:
 def format_report(report: dict[str, Any]) -> str:
     rows = report['videos']
     s = report['summary']
-    headers = ['video', 'label', 'gt_frames', 'hit', 'delay(f)', 'alerts', 'fp', 'ids', 'red_gt%', 'tracks']
+    headers = ['video', 'label', 'gt_frames', 'hit', 'delay(f)', 'alerts', 'fp', 'ids', 'red_gt%', 'tracks', 'label_ok']
     table_rows: list[list[str]] = []
     for r in rows:
         gt_str = ','.join(f'{a}-{b}' for a, b in r['gt_spans']) if r['gt_spans'] else '-'
@@ -357,6 +411,12 @@ def format_report(report: dict[str, Any]) -> str:
         delay_str = f"{r['delay_frames']:+d}" if r['delay_frames'] is not None else '-'
         red_str = f"{r['red_gt_pct']:.1f}%" if r['red_gt_pct'] is not None else '-'
         tracks_str = str(r['n_people_tracks']) if r['n_people_tracks'] is not None else '-'
+        if r.get('label_ok') is True:
+            label_ok_str = 'YES'
+        elif r.get('label_ok') is False:
+            label_ok_str = 'NO'
+        else:
+            label_ok_str = '-'
         table_rows.append([
             str(r['video']),
             r['gt_label'] or '-',
@@ -368,10 +428,11 @@ def format_report(report: dict[str, Any]) -> str:
             str(r['n_unique_ids']),
             red_str,
             tracks_str,
+            label_ok_str,
         ])
 
     widths = [max(len(h), *(len(row[i]) for row in table_rows)) for i, h in enumerate(headers)] if table_rows else [len(h) for h in headers]
-    right_cols = {3, 4, 5, 6, 7, 8, 9}
+    right_cols = {3, 4, 5, 6, 7, 8, 9, 10}
 
     def fmt_row(cols: list[str]) -> str:
         parts = []
@@ -388,12 +449,17 @@ def format_report(report: dict[str, Any]) -> str:
     mdelay = f"{s['mean_delay_frames']:+.1f}f" if s['mean_delay_frames'] is not None else 'N/A'
     mred = f"{s['mean_red_gt_pct']:.1f}%" if s['mean_red_gt_pct'] is not None else 'N/A'
     mred_hit = f"{s['mean_red_gt_pct_hit']:.1f}%" if s['mean_red_gt_pct_hit'] is not None else 'N/A'
+    lacc = (
+        f"{s['label_acc'] * 100:.1f}% ({s['label_ok_count']}/{s['label_eval_count']})"
+        if s.get('label_acc') is not None
+        else 'N/A'
+    )
 
     lines.append('')
     lines.append(
         f"Summary: video_recall={rec} | span_recall={srec} | alert_precision={prec} | "
         f"fp={s['fp_alerts']} | mean_delay={mdelay} | total_ids={s['total_unique_ids']} | "
-        f"mean_red_gt={mred} (hit_only={mred_hit})"
+        f"mean_red_gt={mred} (hit_only={mred_hit}) | label_acc={lacc}"
     )
     return '\n'.join(lines)
 

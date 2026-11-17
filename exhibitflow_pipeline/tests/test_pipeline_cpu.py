@@ -151,8 +151,9 @@ def test_end_to_end_fake_llama_server():
                    startup_timeout=60, n_images=8, max_side=512, short_json=True, max_new_tokens=64)
         summary, out = _run(tmp, vlm)
         res = _check_result(summary, out)
-        assert res['vlm_tasks'][0]['evidence'] == '8 images', res['vlm_tasks'][0]       # 12 ảnh đã xuất -> gửi 8
+        assert res['vlm_tasks'][0]['evidence'] == '9 images', res['vlm_tasks'][0]       # 1 BEFORE + 8 trong 12 ảnh mẫu
         seg_dir = next((out / 'museum_test' / 'vlm_inputs').iterdir())
+        assert any(p.name.startswith('00_before_') for p in (seg_dir / 'marked_512').glob('*.jpg'))
         sizes = {cv2.imread(str(p)).shape[:2] for p in (seg_dir / 'marked_512').glob('*.jpg')}
         assert sizes and all(max(s) <= 512 for s in sizes), sizes
 
@@ -472,6 +473,7 @@ def test_gate_rejects_reasons_and_scene_tracking():
     old_cfg = dict(settings.CFG)
     try:
         settings.CFG['relaxed_gate'] = False
+        settings.CFG['ambiguous_policy'] = 'reject'
         ctx = SimpleNamespace(
             fps=25.0,
             n=120,
@@ -1351,8 +1353,13 @@ def test_relaxed_gate_settings_and_thresholds():
     assert cfg_def['relaxed_hold_seconds'] == 0.15
     assert cfg_def['relaxed_pedestal_contact_thr'] == 0.45
     assert cfg_def['max_tasks_per_video'] == 40
+    assert cfg_def['ambiguous_policy'] == 'nearest'
+    assert cfg_def['ambiguous_diff_thr'] == 0.15
     assert rt_def['periodic_vlm']['enabled'] is True
-    assert rt_def['periodic_vlm']['min_near_sec'] == 3.0
+    assert rt_def['periodic_vlm']['min_near_sec'] == 1.0
+    assert rt_def['periodic_vlm']['flush_on_end'] is True
+    assert rt_def['periodic_vlm']['flush_min_sec'] == 1.0
+    assert rt_def['periodic_vlm']['flush_max_per_track'] == 2
 
     old_cfg = dict(settings.CFG)
     try:
@@ -1667,7 +1674,9 @@ def test_seg_settings_phrases_and_fallback_empty_thr():
 
     assert rt_def['seg_multi_frame'] == dict(enabled=True, step_sec=2.0, max_frames_per_scene=4)
     assert rt_def['seg_merge_iou'] == 0.5
-    assert rt_def['seg_merge_min_votes'] == 2
+    assert rt_def['seg_merge_min_votes'] == 1
+    assert rt_def['seg_merge_keep_ref'] is True
+    assert rt_def['seg_merge_min_votes_extra'] == 1
     assert rt_def['scene_color_cut'] is True
     assert rt_def['scene_color_hist_thr'] == 0.35
 
@@ -1746,7 +1755,7 @@ def test_seg_settings_phrases_and_fallback_empty_thr():
 
 
 def test_merge_masks_multi_frame_iou_and_voting():
-    """Hợp nhất mask đa frame theo IoU >= 0.5: giữ mask xuất hiện >= 2 lần hoặc điểm cao nhất, bỏ nhiễu 1 frame."""
+    """Hợp nhất mask đa frame theo IoU >= 0.5: chế độ union giữ đủ mask, chế độ min_votes=2 & keep_ref=False lọc theo số phiếu."""
     from exhibitflow.segmenter import merge_masks
 
     def mk_box_mask(x1, y1, x2, y2):
@@ -1754,7 +1763,7 @@ def test_merge_masks_multi_frame_iou_and_voting():
         m[y1:y2, x1:x2] = True
         return m
 
-    # Frame 0: A (score 0.85) + nhiễu FP (score 0.30)
+    # Frame 0: A (score 0.85) + stone (score 0.30)
     # Frame 1: A hơi lệch (IoU = 36*40 / (44*40) = 0.82 >= 0.5, score 0.80) + B (score 0.60)
     # Frame 2: A (score 0.90) + B hơi lệch (score 0.65)
     m_a0 = mk_box_mask(20, 20, 60, 60)
@@ -1775,7 +1784,8 @@ def test_merge_masks_multi_frame_iou_and_voting():
                dict(id=1, box=[152, 30, 212, 90], label='display case', score=0.65, pedestal=False, fallback=True)],
          {0: m_a2, 1: m_b2}),
     ]
-    arts, masks = merge_masks(res, iou_thr=0.5, min_votes=2)
+    # Chế độ bỏ phiếu chặt (keep_ref=False, min_votes=2): chỉ giữ >= 2 phiếu
+    arts, masks = merge_masks(res, iou_thr=0.5, min_votes=2, keep_ref=False)
     assert len(arts) == 2, arts
     labels = {a['label']: a for a in arts}
     assert 'painting' in labels and labels['painting']['votes'] == 3
@@ -1784,23 +1794,149 @@ def test_merge_masks_multi_frame_iou_and_voting():
     # Majority vote ở n=3 giữ đúng vùng [20:60, 20:60] (xuất hiện ở 2/3 frame)
     assert np.array_equal(masks[labels['painting']['id']], m_a0)
 
-    # Hai detection trùng nhau trên CÙNG 1 frame không được tính là 2 frame
+    # Mặc định TASK-012 (union: min_votes=1, keep_ref=True): giữ đủ cả 3 mask (không mất stone ở frame 0)
+    arts_u, _ = merge_masks(res)
+    assert {a['label'] for a in arts_u} == {'painting', 'display case', 'stone'}
+
+    # Hai detection trùng nhau trên CÙNG 1 frame không được tính là 2 frame và chỉ giữ 1
     same_frame_only = [
         (0, [dict(id=0, box=[20, 20, 60, 60], label='painting', score=0.80, pedestal=False, fallback=False),
              dict(id=1, box=[22, 20, 62, 60], label='painting', score=0.50, pedestal=False, fallback=False)],
          {0: m_a0, 1: m_a1}),
     ]
-    arts_sf, _ = merge_masks(same_frame_only, iou_thr=0.5, min_votes=2)
+    arts_sf, _ = merge_masks(same_frame_only, iou_thr=0.5)
     assert len(arts_sf) == 1 and arts_sf[0]['votes'] == 1 and arts_sf[0]['score'] == 0.80
 
-    # Không có mask nào >= 2 lần -> vẫn giữ mask điểm cao nhất
+    # Không có mask nào >= 2 lần:
+    # - Mặc định (min_votes=1, keep_ref=True): giữ cả 3 (union)
+    # - keep_ref=True, min_votes_extra=2: chỉ giữ mask ở frame tham chiếu (frame 0)
+    # - keep_ref=False, min_votes=2: bỏ điều kiện cl is clusters[0] -> 0 mask
     no_repeat = [
         (0, [dict(id=0, box=[20, 20, 60, 60], label='statue', score=0.45, pedestal=False, fallback=False)], {0: m_a0}),
         (50, [dict(id=0, box=[150, 30, 210, 90], label='painting', score=0.72, pedestal=False, fallback=False)], {0: m_b1}),
         (100, [dict(id=0, box=[230, 120, 270, 160], label='vase', score=0.55, pedestal=False, fallback=True)], {0: m_fp}),
     ]
-    arts_nr, _ = merge_masks(no_repeat, iou_thr=0.5, min_votes=2)
-    assert len(arts_nr) == 1 and arts_nr[0]['label'] == 'painting' and arts_nr[0]['score'] == 0.72
+    arts_nr_def, _ = merge_masks(no_repeat, iou_thr=0.5)
+    assert {a['label'] for a in arts_nr_def} == {'statue', 'painting', 'vase'}
+    arts_nr_ref, _ = merge_masks(no_repeat, iou_thr=0.5, min_votes=1, keep_ref=True, min_votes_extra=2)
+    assert len(arts_nr_ref) == 1 and arts_nr_ref[0]['label'] == 'statue'
+    arts_nr_strict, _ = merge_masks(no_repeat, iou_thr=0.5, min_votes=2, keep_ref=False)
+    assert len(arts_nr_strict) == 0
+
+
+def test_seg_union_three_frames_and_ref_superset():
+    """TASK-012: 3 frame [A,B,C], [A,D], [B,E] -> đủ {A,B,C,D,E}; mask frame tham chiếu không mất; mask trùng IoU>=0.5 chỉ giữ 1."""
+    import copy
+    from types import SimpleNamespace
+    from exhibitflow.common import video_meta
+    from exhibitflow.segmenter import SegmenterSession, artifact_cache_dir, merge_masks, prepare_artifacts
+
+    def mk_box(x1, y1, x2, y2):
+        m = np.zeros((240, 400), bool)
+        m[y1:y2, x1:x2] = True
+        return m
+
+    # 5 vùng rời nhau (IoU đôi một = 0); A', B' lệch nhẹ so với A, B nhưng IoU >= 0.5
+    m_A = mk_box(10, 10, 60, 60)
+    m_A2 = mk_box(14, 10, 64, 60)   # IoU(A, A2) = 46/54 = 0.85 >= 0.5
+    m_B = mk_box(90, 10, 140, 60)
+    m_B2 = mk_box(92, 12, 142, 62)  # IoU(B, B2) = 48*48 / (50*50*2 - 48*48) = 2304/2696 = 0.85 >= 0.5
+    m_C = mk_box(170, 10, 220, 60)
+    m_D = mk_box(250, 10, 300, 60)
+    m_E = mk_box(330, 10, 380, 60)
+
+    def art(aid, label, score, box):
+        return dict(id=aid, box=box, label=label, score=score, pedestal=False, fallback=False)
+
+    frames_res = [
+        (0, [art(0, 'A', 0.55, [10, 10, 60, 60]),
+             art(1, 'B', 0.50, [90, 10, 140, 60]),
+             art(2, 'C', 0.35, [170, 10, 220, 60])],
+         {0: m_A, 1: m_B, 2: m_C}),
+        (50, [art(0, 'A', 0.90, [14, 10, 64, 60]),
+              art(1, 'D', 0.45, [250, 10, 300, 60])],
+         {0: m_A2, 1: m_D}),
+        (100, [art(0, 'B', 0.88, [92, 12, 142, 62]),
+               art(1, 'E', 0.42, [330, 10, 380, 60])],
+         {0: m_B2, 1: m_E}),
+    ]
+
+    # 1) Mặc định union: đủ {A, B, C, D, E}, không trùng mask IoU>=0.5
+    arts, masks = merge_masks(frames_res)
+    by_lbl = {a['label']: a for a in arts}
+    assert set(by_lbl) == {'A', 'B', 'C', 'D', 'E'}, arts
+    assert len(arts) == 5 and len(masks) == 5
+    assert by_lbl['A']['votes'] == 2 and by_lbl['B']['votes'] == 2
+    assert by_lbl['C']['votes'] == 1 and by_lbl['D']['votes'] == 1 and by_lbl['E']['votes'] == 1
+    # Mask của frame tham chiếu (A, B, C) giữ nguyên pixel-for-pixel
+    assert np.array_equal(masks[by_lbl['A']['id']], m_A)
+    assert np.array_equal(masks[by_lbl['B']['id']], m_B)
+    assert np.array_equal(masks[by_lbl['C']['id']], m_C)
+
+    # 2) Bật lọc nhiễu cho frame phụ (min_votes_extra=2): C (ở ref frame) vẫn giữ, D & E (1 phiếu ngoài ref) bị lọc
+    arts_ext, _ = merge_masks(frames_res, min_votes=1, keep_ref=True, min_votes_extra=2)
+    assert {a['label'] for a in arts_ext} == {'A', 'B', 'C'}
+
+    # 3) Kể cả min_votes=2 khi keep_ref=True: mọi mask ở frame tham chiếu (A, B, C) vẫn không bao giờ bị mất
+    arts_kr, _ = merge_masks(frames_res, min_votes=2, keep_ref=True, min_votes_extra=1)
+    assert {a['label'] for a in arts_kr} == {'A', 'B', 'C'}
+
+    # 4) Cache key đổi theo seg_merge_keep_ref / seg_merge_min_votes_extra và chuẩn hoá superset trong prepare_artifacts
+    old_rt = copy.deepcopy(settings.RT)
+    old_paths = (settings.WORK, settings.OUT, settings.CACHE)
+    try:
+        spec = dict(backend='gdino_sam')
+        c0 = artifact_cache_dir('v_t12', spec, 0, sample_idxs=[0, 50, 100])
+        settings.RT['seg_merge_min_votes_extra'] = 2
+        c1 = artifact_cache_dir('v_t12', spec, 0, sample_idxs=[0, 50, 100])
+        assert c1 != c0
+        settings.RT['seg_merge_keep_ref'] = False
+        c2 = artifact_cache_dir('v_t12', spec, 0, sample_idxs=[0, 50, 100])
+        assert c2 != c1 and c2 != c0
+
+        # End-to-end prepare_artifacts: frame đầu thiếu D (bị người che), frame sau thấy D -> kết quả là superset {A, B, D}
+        settings.RT['seg_merge_min_votes'] = 1
+        settings.RT['seg_merge_keep_ref'] = True
+        settings.RT['seg_merge_min_votes_extra'] = 1
+        call_n = [0]
+
+        @register('segmenter', 'fake_t12_seg')
+        class FakeT12Seg:
+            def __init__(self, **_):
+                pass
+            def warmup(self):
+                pass
+            def segment(self, frame, ref_idx, person_boxes, sample_frames, tracks):
+                idx = call_n[0]
+                call_n[0] += 1
+                h, w = frame.shape[:2]
+                m1 = np.zeros((h, w), bool); m1[20:80, 20:80] = True
+                m2 = np.zeros((h, w), bool); m2[20:80, 140:200] = True
+                m3 = np.zeros((h, w), bool); m3[20:80, 260:320] = True
+                if idx == 0:
+                    return [art(0, 'A', 0.8, [20, 20, 80, 80]), art(1, 'B', 0.4, [140, 20, 200, 80])], {0: m1, 1: m2}, []
+                return [art(0, 'A', 0.85, [20, 20, 80, 80]), art(1, 'D', 0.7, [260, 20, 320, 80])], {0: m1, 1: m3}, []
+            def release(self):
+                pass
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            tmp = Path(tmp)
+            settings.set_paths(work=tmp / 'work', out=tmp / 'out')
+            vid = tmp / 't12.avi'
+            wr = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*'MJPG'), FPS, (W, H))
+            for _ in range(100):
+                wr.write(np.full((H, W, 3), 100, np.uint8))
+            wr.release()
+            M = SimpleNamespace(detector=SimpleNamespace(detect=lambda _img: []))
+            d = dict(path=vid, **video_meta(vid))
+            res = prepare_artifacts('t12', d, M, SegmenterSession(dict(backend='fake_t12_seg')))
+            assert not res.error, res.error
+            assert {a['label'] for a in res.artifacts} == {'A', 'B', 'D'}
+            assert len(res.artifacts) >= 2  # tối thiểu >= bản 1 frame (frame 0 có 2 mask)
+    finally:
+        settings.RT.clear()
+        settings.RT.update(old_rt)
+        settings.WORK, settings.OUT, settings.CACHE = old_paths
 
 
 def test_scene_cut_color_histogram_gray_to_color():
@@ -1903,10 +2039,11 @@ def test_seg_multi_frame_prepare_artifacts_and_compat():
             assert len(res.scenes) == 2
             assert res.scenes[0]['start'] == 0 and res.scenes[1]['start'] == 125
             assert len(seg_calls) == 6, f'kỳ vọng 3 frame x 2 cảnh = 6 lần segment, nhận {len(seg_calls)}'
-            # Nhiễu 1 frame ở cảnh 0 bị loại, chỉ còn mounted painting (votes=3)
-            assert len(res.scenes[0]['artifacts']) == 1
-            assert res.scenes[0]['artifacts'][0]['label'] == 'mounted painting'
-            assert res.scenes[0]['artifacts'][0]['votes'] == 3
+            # TASK-012: mặc định union (keep_ref=True, min_votes=1) giữ đủ cả mask frame tham chiếu (stone) lẫn mounted painting
+            assert len(res.scenes[0]['artifacts']) == 2
+            s0_by_lbl = {a['label']: a for a in res.scenes[0]['artifacts']}
+            assert s0_by_lbl['mounted painting']['votes'] == 3
+            assert s0_by_lbl['stone']['votes'] == 1
             assert res.timing['source'] == 'computed'
 
             # 2) Chạy lần 2 -> cache hit (0 lần gọi segmenter)
@@ -1915,7 +2052,7 @@ def test_seg_multi_frame_prepare_artifacts_and_compat():
             res_cached = prepare_artifacts('multi_scene_t8', d, M, seg2)
             assert not res_cached.error, res_cached.error
             assert len(seg_calls) == 0 and res_cached.timing['source'] == 'cache'
-            assert len(res_cached.artifacts) == 2
+            assert len(res_cached.artifacts) == 3
 
             # 3) Tắt seg_multi_frame -> chỉ gọi 1 lần mỗi cảnh (= 2 lần)
             settings.RT['seg_multi_frame'] = dict(enabled=False, step_sec=2.0, max_frames_per_scene=4)
@@ -2647,7 +2784,7 @@ def test_helpers():
     assert parse_response('no json')  is None
     assert parse_response('{"label": "dancing"}')['label'] == 'invalid:dancing'
     task = dict(images=[f'x{i}.jpg' for i in range(12)], times=[i * .5 for i in range(12)], tid=3,
-                prompt=settings.PROMPT_TEMPLATE.format(n=12, dt=0.5, tid=3))
+                prompt=settings.PROMPT_TEMPLATE.format(n=12, dt=0.5, tid=3, before_note=''))
     t = adapt_task(task, dict(n_images=8, short_json=True))
     assert len(t['images']) == 8 and 'contact_frames' not in t['prompt'].split('Answer JSON only:')[1] and 'The 8 images' in t['prompt']
     assert adapt_task(task, {}) is task
@@ -2895,6 +3032,571 @@ def test_tuning_api_schema_and_validation_both_servers():
             assert r_wok.status_code == 200, r_wok.text
             jid = r_wok.json()['job_id']
             wc.post(f'/api/jobs/{jid}/cancel')
+
+
+def test_ambiguous_policy_nearest_vs_reject():
+    """TASK-013 (1): 2 mask cách nhau 0.1 (< 0.15) -> policy 'nearest' chọn mask gần nhất, tạo event + ghi ambiguous_resolved; 'reject' -> không event."""
+    from types import SimpleNamespace
+    from exhibitflow.interaction import OnlineInteraction
+
+    def mk_rec(tid, box, rw):
+        x1, y1, x2, y2 = box
+        cx, bh = (x1 + x2) / 2, y2 - y1
+        kp = [[cx, y1 + 0.08 * bh]] * 5 + [
+            [cx - 20, y1 + 0.2 * bh], [cx + 20, y1 + 0.2 * bh],
+            [cx - 22, y1 + 0.4 * bh], [cx + 22, y1 + 0.4 * bh],
+            [cx - 20, y1 + 0.5 * bh], rw,
+            [cx - 15, y1 + 0.55 * bh], [cx + 15, y1 + 0.55 * bh],
+            [cx - 15, y1 + 0.75 * bh], [cx + 15, y1 + 0.75 * bh],
+            [cx - 15, y2], [cx + 15, y2],
+        ]
+        kc = [1.0] * 17
+        kc[9] = 0.0
+        return dict(id=tid, box=list(box), kp=kp, kc=kc)
+
+    def mk_mask(x1, y1, x2, y2):
+        m = np.zeros((H, W), bool)
+        m[y1:y2, x1:x2] = True
+        return m
+
+    old_cfg, old_rt = dict(settings.CFG), dict(settings.RT)
+    try:
+        settings.RT['periodic_vlm'] = dict(enabled=False)
+
+        def run_case(policy):
+            settings.CFG['ambiguous_policy'] = policy
+            submitted = []
+            ctx = SimpleNamespace(
+                fps=25.0, n=120, last_frame=0,
+                vlm=SimpleNamespace(submit=lambda *a, **kw: None),
+                cur_scene=0, scene_index=lambda _i: 0, d=dict(W=960, H=540),
+            )
+            inter = OnlineInteraction(ctx)
+            inter._submit = lambda g: (g.update(name=f't_{len(inter.tasks)}'), inter.tasks.append(g), submitted.append(g))
+            # Chiều cao người = 220px. Mask 10: x=[570..610] -> d=20/220=0.091; Mask 11: x=[592..632] -> d=42/220=0.191 (chênh 0.10 < 0.15)
+            arts = [
+                dict(id=10, box=[570.0, 300.0, 610.0, 420.0], pedestal=False),
+                dict(id=11, box=[592.0, 300.0, 632.0, 420.0], pedestal=False),
+            ]
+            inter.set_artifacts(arts, {10: mk_mask(570, 300, 610, 420), 11: mk_mask(592, 300, 632, 420)})
+            rec = mk_rec(1, [440.0, 200.0, 520.0, 420.0], [550.0, 350.0])
+            for f in range(15):
+                inter.step(f, [rec])
+            inter.flush(30)
+            return inter, submitted
+
+        # Policy mặc định 'nearest' -> chọn mask gần hơn (id=10), tạo event
+        inter_n, sub_n = run_case('nearest')
+        diag_n = inter_n.diagnostics()
+        assert len(inter_n.events) == 1, inter_n.events
+        assert inter_n.events[0]['artifact_id'] == 10
+        assert len(sub_n) == 1 and sub_n[0]['artifact_ids'] == [10]
+        assert diag_n['ambiguous_resolved'] == 15
+        assert 'ambiguous' not in diag_n['gate_rejects'].get('1', {})
+
+        # Policy 'reject' -> hành vi cũ, loại không tạo event
+        inter_r, sub_r = run_case('reject')
+        diag_r = inter_r.diagnostics()
+        assert inter_r.events == [] and sub_r == []
+        assert diag_r['ambiguous_resolved'] == 0
+        assert diag_r['gate_rejects']['1']['ambiguous'] == 15
+    finally:
+        settings.CFG.clear()
+        settings.CFG.update(old_cfg)
+        settings.RT.clear()
+        settings.RT.update(old_rt)
+
+
+def test_periodic_vlm_flush_on_end_and_track_loss():
+    """TASK-013 (2)-(3): flush khi hết video hoặc mất track > max_gap nếu NEAR >= flush_min_sec; tôn trọng max_tasks và tối đa 2 lần/track."""
+    from types import SimpleNamespace
+    from exhibitflow.interaction import OnlineInteraction
+
+    def mk_rec(tid, box, rw):
+        x1, y1, x2, y2 = box
+        cx, bh = (x1 + x2) / 2, y2 - y1
+        kp = [[cx, y1 + 0.08 * bh]] * 5 + [
+            [cx - 20, y1 + 0.2 * bh], [cx + 20, y1 + 0.2 * bh],
+            [cx - 22, y1 + 0.4 * bh], [cx + 22, y1 + 0.4 * bh],
+            [cx - 20, y1 + 0.5 * bh], rw,
+            [cx - 15, y1 + 0.55 * bh], [cx + 15, y1 + 0.55 * bh],
+            [cx - 15, y1 + 0.75 * bh], [cx + 15, y1 + 0.75 * bh],
+            [cx - 15, y2], [cx + 15, y2],
+        ]
+        kc = [1.0] * 17
+        kc[9] = 0.0
+        return dict(id=tid, box=list(box), kp=kp, kc=kc)
+
+    def setup_inter(n_frames=300):
+        submitted = []
+        ctx = SimpleNamespace(
+            fps=25.0, n=n_frames, last_frame=0,
+            vlm=SimpleNamespace(submit=lambda *a, **kw: None),
+            cur_scene=0, scene_index=lambda _i: 0, d=dict(W=960, H=540),
+        )
+        inter = OnlineInteraction(ctx)
+        inter._submit = lambda g: (g.update(name=f'f_{len(inter.tasks)}'), inter.tasks.append(g), submitted.append(g))
+        mask = np.zeros((H, W), bool)
+        mask[300:420, 560:640] = True
+        inter.set_artifacts([dict(id=0, box=[560.0, 300.0, 640.0, 420.0], pedestal=False)], {0: mask})
+        return inter, submitted
+
+    old_cfg, old_rt, old_export = dict(settings.CFG), dict(settings.RT), dict(settings.EXPORT)
+    try:
+        settings.EXPORT['pre_sec'] = 1.0
+        settings.EXPORT['post_sec'] = 1.0
+        settings.EXPORT['max_window_sec'] = 8.0
+        near_rec = mk_rec(1, [330.0, 200.0, 410.0, 420.0], [450.0, 350.0])  # NEAR d=0.50 (không chạm)
+
+        # (2) Track NEAR 1.5s (38 frame @ 25fps), min_near_sec=3.0 (chưa kích hoạt giữa chừng), hết video -> đúng 1 task flush
+        settings.RT['periodic_vlm'] = dict(
+            enabled=True, min_near_sec=3.0, cooldown_sec=3.0, max_near_gap_frames=5,
+            flush_on_end=True, flush_min_sec=1.0, flush_max_per_track=2,
+        )
+        inter1, sub1 = setup_inter(n_frames=100)
+        for f in range(38):
+            inter1.step(f, [near_rec])
+        assert sub1 == [], 'chưa hết video / chưa mất track -> không flush sớm'
+        inter1.flush(37)
+        assert len(sub1) == 1 and sub1[0].get('flush') is True and sub1[0].get('periodic') is True
+        assert sub1[0]['start'] == 0 and sub1[0]['end'] == 37
+        assert sub1[0]['window'] == [0, 37]
+
+        # (3) Track NEAR 0.5s (13 frame @ 25fps < flush_min_sec=1.0) -> không flush
+        inter2, sub2 = setup_inter(n_frames=100)
+        for f in range(13):
+            inter2.step(f, [near_rec])
+        inter2.flush(12)
+        assert sub2 == []
+
+        # (4) Track mất > max_gap sau 1.5s NEAR -> flush + post_sec; lặp lại tối đa 2 lần flush mỗi track
+        inter3, sub3 = setup_inter(n_frames=400)
+        # Đợt 1: f=10..47 (38 frame = 1.52s), rồi mất track từ f=48..80
+        for f in range(10, 48):
+            inter3.step(f, [near_rec])
+        for f in range(48, 80):
+            inter3.step(f, [])
+        assert len(sub3) == 1 and sub3[0].get('flush') is True
+        assert sub3[0]['start'] == 10 and sub3[0]['end'] == 47
+        assert sub3[0]['window'] == [0, 72]  # 47 + 25 (post_sec=1.0s)
+
+        # Đợt 2: f=100..137 (38 frame), rồi mất track f=138..170 -> flush lần 2
+        for f in range(100, 138):
+            inter3.step(f, [near_rec])
+        for f in range(138, 170):
+            inter3.step(f, [])
+        assert len(sub3) == 2
+
+        # Đợt 3: f=200..237 (38 frame), kết thúc video -> bị chặn bởi flush_max_per_track=2
+        for f in range(200, 238):
+            inter3.step(f, [near_rec])
+        inter3.flush(237)
+        assert len(sub3) == 2, f'tối đa 2 lần flush mỗi track, nhận {len(sub3)}'
+
+        # (5) Tôn trọng max_tasks_per_video và flush_on_end=False
+        settings.CFG['max_tasks_per_video'] = 1
+        inter4, sub4 = setup_inter(n_frames=300)
+        for f in range(0, 38):
+            inter4.step(f, [near_rec])
+        for f in range(38, 70):
+            inter4.step(f, [])
+        for f in range(80, 118):
+            inter4.step(f, [near_rec])
+        inter4.flush(117)
+        assert len(sub4) == 1, 'không được vượt quá max_tasks_per_video=1'
+
+        settings.CFG['max_tasks_per_video'] = 40
+        settings.RT['periodic_vlm']['flush_on_end'] = False
+        inter5, sub5 = setup_inter(n_frames=100)
+        for f in range(38):
+            inter5.step(f, [near_rec])
+        inter5.flush(37)
+        assert sub5 == []
+    finally:
+        settings.CFG.clear()
+        settings.CFG.update(old_cfg)
+        settings.RT.clear()
+        settings.RT.update(old_rt)
+        settings.EXPORT.clear()
+        settings.EXPORT.update(old_export)
+
+
+def test_ambiguous_and_flush_end_to_end_pipeline():
+    """End-to-end TASK-013: (1) 2 mask sát nhau vẫn tạo event/alert với ambiguous_policy='nearest'; (2) NEAR 1.5s hết video -> flush VLM -> alert."""
+    import copy
+    from exhibitflow import run_pipeline
+
+    @register('detector', 'fake_t13_det')
+    class FakeT13Det:
+        def __init__(self, **_):
+            pass
+
+        def detect(self, frame):
+            m = cv2.inRange(frame, (0, 150, 0), (80, 255, 80))
+            ys, xs = np.nonzero(m)
+            if len(xs) < 100:
+                return []
+            return [[float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max()), 0.9]]
+
+    @register('pose', 'fake_t13_pose')
+    class FakeT13Pose:
+        def __init__(self, mode='touch', **_):
+            self.mode = mode
+
+        def __call__(self, native, recs, S):
+            for r in recs:
+                x1, y1, x2, y2 = r['box']
+                cx, h = (x1 + x2) / 2, y2 - y1
+                # touch: d0 ~ 0.09 (chạm mask 0); near_only: d0 ~ 0.50 (chỉ NEAR)
+                wx = (ART[0] - 0.09 * h) if self.mode == 'touch' else (ART[0] - 0.50 * h)
+                kp = [[cx, y1 + 0.1 * h]] * 5 + [
+                    [cx - 10, y1 + .2 * h], [cx + 10, y1 + .2 * h],
+                    [cx - 12, y1 + .4 * h], [wx - 5, y1 + .4 * h],
+                    [cx - 12, y1 + .6 * h], [wx, y1 + .5 * h],
+                    [cx - 8, y1 + .55 * h], [cx + 8, y1 + .55 * h],
+                    [cx - 8, y1 + .75 * h], [cx + 8, y1 + .75 * h],
+                    [cx - 8, y2], [cx + 8, y2],
+                ]
+                r['kp'], r['kc'] = kp, [1.0] * 17
+
+    @register('segmenter', 'fake_t13_seg')
+    class FakeT13Seg:
+        def __init__(self, two_masks=True, **_):
+            self.two_masks = two_masks
+
+        def warmup(self):
+            pass
+
+        def segment(self, frame, ref_idx, person_boxes, sample_frames, tracks):
+            m0 = np.zeros(frame.shape[:2], bool)
+            m0[ART[1]:ART[3], ART[0]:ART[2]] = True
+            arts = [dict(id=0, box=[float(v) for v in ART], label='sculpture', score=0.9, pedestal=False, fallback=False)]
+            masks = {0: m0}
+            if self.two_masks:
+                # Mask 1 dịch sang phải 22px -> chênh khoảng cách ~ 22/220 = 0.10 < 0.15 (ambiguous)
+                m1 = np.zeros(frame.shape[:2], bool)
+                m1[ART[1]:ART[3], ART[0] + 22:ART[2] + 22] = True
+                arts.append(dict(id=1, box=[float(ART[0] + 22), float(ART[1]), float(ART[2] + 22), float(ART[3])],
+                                 label='sculpture', score=0.85, pedestal=False, fallback=False))
+                masks[1] = m1
+            return arts, masks, []
+
+        def release(self):
+            pass
+
+    def make_custom_video(path, box, f_start, f_end, n_frames):
+        wr = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'MJPG'), FPS, (W, H))
+        for i in range(n_frames):
+            f = np.full((H, W, 3), 90, np.uint8)
+            cv2.rectangle(f, (ART[0], ART[1]), (ART[2], ART[3]), (200, 200, 200), -1)
+            if f_start <= i <= f_end:
+                cv2.rectangle(f, (box[0], box[1]), (box[2], box[3]), (0, 200, 0), -1)
+            wr.write(f)
+        wr.release()
+
+    old_cfg, old_rt, old_models, old_run = (
+        copy.deepcopy(settings.CFG), copy.deepcopy(settings.RT),
+        copy.deepcopy(settings.MODELS), copy.deepcopy(settings.RUN),
+    )
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            tmp = Path(tmp)
+            vid_amb = tmp / 'amb.avi'
+            make_custom_video(vid_amb, (440, 200, 520, 420), f_start=5, f_end=25, n_frames=40)
+            models_amb = dict(
+                FAKE_MODELS,
+                detector=dict(backend='fake_t13_det'),
+                pose=dict(backend='fake_t13_pose', mode='touch'),
+                segmenter=dict(backend='fake_t13_seg', two_masks=True),
+                vlm=dict(backend='dry_run', delay_s=0.0, label='touching'),
+            )
+            sum_amb = run_pipeline(
+                [str(vid_amb)], out_dir=tmp / 'out_amb', work_dir=tmp / 'work_amb',
+                overrides=dict(models=models_amb, rt=dict(queue_size=4, pose_gate_norm_dist=None)),
+            )
+            assert not sum_amb['errors'], sum_amb['errors']
+            res_amb = json.loads((tmp / 'out_amb' / 'amb' / 'result.json').read_text(encoding='utf-8'))
+            assert res_amb['summary']['n_events'] >= 1 and res_amb['summary']['n_alerts'] >= 1, res_amb['summary']
+            assert res_amb['diagnostics']['ambiguous_resolved'] > 0
+
+            # End-to-end flush cuối video khi đứng NEAR 1.5s (40 frame @ 25fps) và min_near_sec=3.0
+            vid_flush = tmp / 'flush_near.avi'
+            make_custom_video(vid_flush, (330, 200, 410, 420), f_start=0, f_end=39, n_frames=40)
+            models_flush = dict(
+                FAKE_MODELS,
+                detector=dict(backend='fake_t13_det'),
+                pose=dict(backend='fake_t13_pose', mode='near_only'),
+                segmenter=dict(backend='fake_t13_seg', two_masks=False),
+                vlm=dict(backend='dry_run', delay_s=0.0, label='stealing'),
+            )
+            sum_fl = run_pipeline(
+                [str(vid_flush)], out_dir=tmp / 'out_fl', work_dir=tmp / 'work_fl',
+                overrides=dict(
+                    models=models_flush,
+                    rt=dict(
+                        queue_size=4,
+                        pose_gate_norm_dist=None,
+                        periodic_vlm=dict(enabled=True, min_near_sec=3.0, cooldown_sec=3.0,
+                                          max_near_gap_frames=5, flush_on_end=True, flush_min_sec=1.0),
+                    ),
+                ),
+            )
+            assert not sum_fl['errors'], sum_fl['errors']
+            res_fl = json.loads((tmp / 'out_fl' / 'flush_near' / 'result.json').read_text(encoding='utf-8'))
+            assert res_fl['summary']['n_vlm_tasks'] == 1, res_fl['summary']
+            assert res_fl['summary']['n_alerts'] == 1 and res_fl['summary']['has_anomaly'] is True
+    finally:
+        settings.CFG.clear()
+        settings.CFG.update(old_cfg)
+        settings.RT.clear()
+        settings.RT.update(old_rt)
+        settings.MODELS.clear()
+        settings.MODELS.update(old_models)
+        settings.RUN.clear()
+        settings.RUN.update(old_run)
+
+
+def test_before_ref_settings_prompt_and_adapt_task():
+    """TASK-014: kiểm tra EXPORT, PROMPT_FIELDS, adapt_task giữ ảnh BEFORE (tổng n_images+1) và tương thích prompt tuỳ chỉnh."""
+    from unittest.mock import patch
+    from exhibitflow.vlm import LlamaCppVLM, adapt_task
+
+    assert settings.EXPORT['post_sec'] == 3.0
+    assert settings.EXPORT['max_window_sec'] == 10.0
+    assert settings.EXPORT['before_ref'] is True
+    assert 'before_note' in settings.PROMPT_FIELDS
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        img_paths = []
+        for i in range(13):
+            p = tmp / (f'00_before_f00000.jpg' if i == 0 else f'{i:02d}_f{i:05d}.jpg')
+            im = np.full((64, 64, 3), 80 + i * 5, np.uint8)
+            cv2.imwrite(str(p), im)
+            img_paths.append(str(p))
+
+        task = dict(
+            images=img_paths,
+            times=[None] + [i * 0.25 for i in range(12)],
+            tid=7,
+            has_before=True,
+            before_frame=0,
+            prompt=settings.PROMPT_TEMPLATE.format(n=13, dt=0.25, tid=7, before_note=settings.BEFORE_NOTE),
+        )
+        t = adapt_task(task, dict(n_images=8, max_side=512, short_json=True))
+        assert len(t['images']) == 9, f'kỳ vọng 8+1=9 ảnh, nhận {len(t["images"])}'
+        assert Path(t['images'][0]).name == '00_before_f00000.jpg'
+        assert t['times'][0] is None
+        assert 'Image 1 is a reference taken BEFORE' in t['prompt']
+        assert 'contact_frames' not in t['prompt'].split('Answer JSON only:')[1]
+
+        # Kiểm tra LlamaCppVLM.infer gắn nhãn Image 1 là BEFORE trong payload gửi server
+        captured = {}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def read(self):
+                return json.dumps(dict(
+                    choices=[dict(message=dict(content='{"label": "stealing", "confidence": 0.9}'))],
+                    usage=dict(prompt_tokens=100, completion_tokens=10),
+                )).encode()
+
+        def _fake_urlopen(req, timeout=900):
+            captured['body'] = json.loads(req.data.decode('utf-8'))
+            return _FakeResp()
+
+        dummy = object.__new__(LlamaCppVLM)
+        dummy.max_pixels = 768 * 768
+        dummy.max_new_tokens = 64
+        dummy.port = 8089
+        dummy.cache_prompt = False
+        dummy.gpus = []
+        with patch('urllib.request.urlopen', side_effect=_fake_urlopen):
+            text, _, _ = dummy.infer(t)
+        assert 'stealing' in text
+        msg_content = captured['body']['messages'][-1]['content']
+        text_parts = [c['text'] for c in msg_content if c['type'] == 'text']
+        assert 'BEFORE' in text_parts[0], text_parts[0]
+        assert text_parts[1].startswith('Frame 2 (t='), text_parts[1]
+
+        # Prompt tuỳ chỉnh thiếu {before_note} vẫn chạy bình thường và không chèn BEFORE note
+        old_prompt = settings.PROMPT_TEMPLATE
+        try:
+            settings.PROMPT_TEMPLATE = (
+                'Custom {n} frames dt={dt:.2f}s ID={tid}.\n'
+                'Answer JSON only:\n{{"label": "...", "confidence": 0.0, "contact_frames": []}}'
+            )
+            t_custom = adapt_task(task, dict(n_images=8, short_json=True))
+            assert len(t_custom['images']) == 9
+            assert t_custom['prompt'].startswith('Custom 9 frames')
+            assert 'Image 1 is a reference taken BEFORE' not in t_custom['prompt']
+        finally:
+            settings.PROMPT_TEMPLATE = old_prompt
+
+
+def test_before_ref_export_window_and_end_to_end():
+    """TASK-014: _set_window kéo dài post_sec=3.0s; export_task tạo ảnh đầu là 'before', prompt giải thích BEFORE; tắt before_ref không tạo ảnh before."""
+    import types
+    from exhibitflow import run_pipeline
+    from exhibitflow.interaction import OnlineInteraction
+
+    old_cfg, old_rt, old_models, old_export = (
+        dict(settings.CFG), dict(settings.RT), dict(settings.MODELS), dict(settings.EXPORT)
+    )
+    try:
+        # (1) _set_window với EXPORT['post_sec']=3.0 (75 frame @ 25fps) và max_window_sec=10.0
+        ctx_win = types.SimpleNamespace(fps=25.0, n=500, d=dict(W=960, H=540))
+        inter = OnlineInteraction(ctx_win)
+        g = dict(tid=1, artifact_ids=[0], start=100, end=130, peak=115, events=[], _main=None)
+        inter._set_window(g)
+        assert g['window'] == [75, 205], g['window']  # 100 - 25 = 75, 130 + 75 (3.0s) = 205
+
+        # (2) End-to-end với before_ref=True (mặc định): ring_seconds nhỏ (2.0s) vẫn giữ được ref frame ở f0 nhờ ctx.ref_frames
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            tmp = Path(tmp)
+            vid = tmp / 'before_e2e.avi'
+            n_fr = 160
+            wr = cv2.VideoWriter(str(vid), cv2.VideoWriter_fourcc(*'MJPG'), FPS, (W, H))
+            for i in range(n_fr):
+                f = np.full((H, W, 3), 90, np.uint8)
+                if i < 100:
+                    cv2.rectangle(f, (ART[0], ART[1]), (ART[2], ART[3]), (200, 200, 200), -1)
+                if 60 <= i <= 110:
+                    cv2.rectangle(f, (430, 200), (510, 420), (0, 200, 0), -1)
+                wr.write(f)
+            wr.release()
+
+            out_on = tmp / 'out_on'
+            sum_on = run_pipeline(
+                [str(vid)], out_dir=out_on, work_dir=tmp / 'work_on',
+                overrides=dict(
+                    models=dict(FAKE_MODELS, vlm=dict(backend='dry_run', delay_s=0.0, label='stealing')),
+                    rt=dict(queue_size=4, pose_gate_norm_dist=None, ring_seconds=3.0,
+                            periodic_vlm=dict(enabled=False), missing_detect=dict(enabled=False)),
+                ),
+            )
+            assert not sum_on['errors'], sum_on['errors']
+            seg_dirs = sorted((out_on / 'before_e2e' / 'vlm_inputs').iterdir())
+            assert seg_dirs
+            marked_imgs = sorted((seg_dirs[0] / 'marked').glob('*.jpg'))
+            assert len(marked_imgs) == settings.EXPORT['n_sample_frames'] + 1
+            assert marked_imgs[0].name.startswith('00_before_f')
+            prompt_txt = (seg_dirs[0] / 'prompt.txt').read_text(encoding='utf-8')
+            assert 'Image 1 is a reference taken BEFORE' in prompt_txt
+            res_on = json.loads((out_on / 'before_e2e' / 'result.json').read_text(encoding='utf-8'))
+            assert res_on['track_summary'] == {'1': {'behavior': 'stealing', 'n_tasks': 1}}, res_on['track_summary']
+
+            # (3) Tắt before_ref=False -> không có ảnh before và không chèn ghi chú BEFORE
+            out_off = tmp / 'out_off'
+            sum_off = run_pipeline(
+                [str(vid)], out_dir=out_off, work_dir=tmp / 'work_off',
+                overrides=dict(
+                    models=dict(FAKE_MODELS, vlm=dict(backend='dry_run', delay_s=0.0, label='touching')),
+                    rt=dict(queue_size=4, pose_gate_norm_dist=None,
+                            periodic_vlm=dict(enabled=False), missing_detect=dict(enabled=False)),
+                    export=dict(before_ref=False),
+                ),
+            )
+            assert not sum_off['errors'], sum_off['errors']
+            seg_off = list((out_off / 'before_e2e' / 'vlm_inputs').iterdir())[0]
+            marked_off = sorted((seg_off / 'marked').glob('*.jpg'))
+            assert len(marked_off) == settings.EXPORT['n_sample_frames']
+            assert not any('before' in p.name for p in marked_off)
+            prompt_off = (seg_off / 'prompt.txt').read_text(encoding='utf-8')
+            assert 'Image 1 is a reference taken BEFORE' not in prompt_off
+    finally:
+        settings.CFG.clear()
+        settings.CFG.update(old_cfg)
+        settings.RT.clear()
+        settings.RT.update(old_rt)
+        settings.MODELS.clear()
+        settings.MODELS.update(old_models)
+        settings.EXPORT.clear()
+        settings.EXPORT.update(old_export)
+
+
+def test_track_summary_severity_and_result_json():
+    """TASK-014: track_summary chọn nhãn nặng nhất (stealing > holding > touching > normal) mà không đổi nhãn từng event."""
+    import types
+    from exhibitflow.engine import AlarmBoard, finalize_video
+    from exhibitflow.pipeline import summarize_tracks, video_result
+
+    assert summarize_tracks([
+        dict(track_id=1, label='normal'),
+        dict(track_id=1, label='touching'),
+        dict(track_id=1, label='stealing'),
+        dict(track_id=2, label='touching'),
+        dict(track_id=2, label='holding'),
+        dict(track_id=3, label='normal'),
+        dict(track_id=3, label='touching'),
+        dict(track_id=4, label='uncertain'),
+        dict(track_id=4, label='normal'),
+        dict(track_id=5, label='error'),
+        dict(track_id=5, label=None),
+    ]) == {
+        '1': {'behavior': 'stealing', 'n_tasks': 3},
+        '2': {'behavior': 'holding', 'n_tasks': 2},
+        '3': {'behavior': 'touching', 'n_tasks': 2},
+        '4': {'behavior': 'normal', 'n_tasks': 2},
+        '5': {'behavior': None, 'n_tasks': 2},
+    }
+
+    # AlarmBoard giữ nhãn nặng hơn nếu có alarm nhẹ hơn đến sau
+    board = AlarmBoard(persist=True)
+    board.add(dict(tid=1, behavior='stealing', conf=0.9, segment='s1', shown_from=10, t_alarm=1.0, artifact_ids=[0]))
+    board.add(dict(tid=1, behavior='touching', conf=0.8, segment='s2', shown_from=20, t_alarm=2.0, artifact_ids=[0]))
+    assert board.flagged[1]['behavior'] == 'stealing'
+
+    # Kiểm tra finalize_video + video_result giữ nguyên nhãn từng event nhưng track_summary chọn nhãn nặng nhất
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        out_dir = Path(tmp)
+        e1 = dict(eid=0, track_id=10, artifact_id=0, hand='right_wrist', start_frame=10, end_frame=20,
+                  contact_frames=[12], min_norm_dist=0.1, peak=12, group=None)
+        e2 = dict(eid=1, track_id=10, artifact_id=0, hand='right_wrist', start_frame=40, end_frame=50,
+                  contact_frames=[42], min_norm_dist=0.1, peak=42, group=None)
+        e3 = dict(eid=2, track_id=11, artifact_id=0, hand='left_wrist', start_frame=60, end_frame=70,
+                  contact_frames=[62], min_norm_dist=0.1, peak=62, group=None)
+        g1 = dict(tid=10, events=[e1], artifact_ids=[0], start=10, end=20, peak=12, window=[0, 30],
+                  name='seg_000', task_id='run/v/seg_000', samples=[10, 12, 20])
+        g2 = dict(tid=10, events=[e2], artifact_ids=[0], start=40, end=50, peak=42, window=[30, 60],
+                  name='seg_001', task_id='run/v/seg_001', samples=[40, 42, 50])
+        g3 = dict(tid=11, events=[e3], artifact_ids=[0], start=60, end=70, peak=62, window=[50, 80],
+                  name='seg_002', task_id='run/v/seg_002', samples=[60, 62, 70])
+        e1['group'], e2['group'], e3['group'] = g1, g2, g3
+
+        vlm_records = [
+            dict(task_id='run/v/seg_000', status='ok', label='touching',
+                 parsed=dict(label='touching', confidence=0.8, contact_frames=[2]), t_done=1.0, infer_s=0.1, queue_wait_s=0.01),
+            dict(task_id='run/v/seg_001', status='ok', label='stealing',
+                 parsed=dict(label='stealing', confidence=0.9, contact_frames=[2]), t_done=2.0, infer_s=0.1, queue_wait_s=0.01),
+            dict(task_id='run/v/seg_002', status='ok', label='holding',
+                 parsed=dict(label='holding', confidence=0.85, contact_frames=[2]), t_done=3.0, infer_s=0.1, queue_wait_s=0.01),
+        ]
+        ctx = types.SimpleNamespace(
+            dir=out_dir, fps=25.0, n=100, key='v', tracks={10: [{'id': 10}], 60: [{'id': 11}]},
+            inter=types.SimpleNamespace(events=[e1, e2, e3], tasks=[g1, g2, g3], diagnostics=lambda: {}),
+            vlm=types.SimpleNamespace(results={r['task_id']: r for r in vlm_records}),
+            art=types.SimpleNamespace(artifacts=[dict(id=0, label='statue', box=[10, 10, 50, 50], pedestal=False)],
+                                      scenes=[dict(start=0, ref_idx=0, artifacts=[0])], error=None),
+            rec=types.SimpleNamespace(df=lambda: __import__('pandas').DataFrame(
+                [('detect', 0, 0.0, 1.0)], columns=['stage', 'frame', 'wait_ms', 'compute_ms'])),
+            frame_log=[dict(frame=0, t_cap=0.0, t_out=0.04, e2e_ms=40.0)],
+            pauses=[], pause_overlap=lambda a, b: 0.0, wall_s=1.0, wall_with_vlm_s=1.5,
+            dropped=[], gpu_peak_gb={},
+            M=types.SimpleNamespace(tracker=None, pose=None, hand=None),
+        )
+        finalize_video(ctx)
+        res = video_result(ctx, out_dir / 'v.mp4', dict(NW=960, NH=540), dict(vlm=dict(backend='dry_run')), vlm_records, {})
+        assert [ev['behavior'] for ev in res['events']] == ['touching', 'stealing', 'holding']
+        assert res['track_summary'] == {
+            '10': {'behavior': 'stealing', 'n_tasks': 2},
+            '11': {'behavior': 'holding', 'n_tasks': 1},
+        }
 
 
 if __name__ == '__main__':
